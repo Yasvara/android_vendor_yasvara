@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.yasvara.roottest.scan">
+    <!-- targetSdk 28 on purpose: the weakest sandbox (untrusted_app_27, no package visibility
+         filtering), so whatever this app cannot see, no app can. -->
+    <application android:label="Root exposure scan" android:debuggable="true">
+        <receiver android:name=".Scan" android:exported="true">
+            <intent-filter>
+                <action android:name="org.yasvara.roottest.scan.RUN" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

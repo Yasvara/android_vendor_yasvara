@@ -1,0 +1,6 @@
+# SPEC-0006 native root: the master switch init watches to start/stop yasvara_rootd.
+persist.yasvara.root.             u:object_r:yasvara_root_prop:s0
+# SPEC-0007: init publishes init.svc.<service> for every service, and coredomain (so every app)
+# may read the generic ones. This one names the daemon; only system_server (installed-state of
+# Akar) and init can touch it.
+init.svc.yasvara_rootd            u:object_r:yasvara_root_prop:s0 exact string

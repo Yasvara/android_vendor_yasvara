@@ -1,0 +1,29 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+// ONNX Runtime 1.30.0 for Android (com.microsoft.onnxruntime:onnxruntime-android, Maven Central),
+// MIT. Runs ToonOut on the CPU for Laras's depth build (SPEC-0013 §10.4).
+//
+// Repacked from the Maven AAR (sha1 checked): arm64-v8a only, and the manifest's
+// TelemetryInitializer provider with its INTERNET/ACCESS_NETWORK_STATE permissions removed, so
+// nothing starts Microsoft's 1DS telemetry upload. Laras also turns telemetry off (OrtEnvironment.setTelemetry(false)).
+//
+
+package {
+    default_applicable_licenses: ["vendor_yasvara_onnxruntime_license"],
+}
+
+license {
+    name: "vendor_yasvara_onnxruntime_license",
+    license_kinds: ["SPDX-license-identifier-MIT"],
+    license_text: ["LICENSE"],
+}
+
+android_library_import {
+    name: "yasvara-onnxruntime",
+    aars: ["onnxruntime-android-1.30.0-arm64.aar"],
+    sdk_version: "current",
+    min_sdk_version: "24",
+    extract_jni: true,
+}

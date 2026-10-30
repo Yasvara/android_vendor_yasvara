@@ -1,0 +1,10 @@
+# Laras (platform_app / platform_app_36) and Settings (system_app) manage the
+# update policy. Use the _all attributes: targetSdk-36 apps get the _36 domains.
+allow { platform_app_all priv_app_all system_app } yasvara_update_policy_service:service_manager find;
+
+# Layang (SPEC-0008): SystemUI and Launcher3 (platform_app*), Laras (platform_app*),
+# GameSpace (system_app, persistent system uid).
+allow { platform_app_all priv_app_all system_app } yasvara_layang_service:service_manager find;
+
+# Swara (SPEC-0010): SystemUI's Volume Panel and Laras (platform_app*).
+allow { platform_app_all priv_app_all system_app } yasvara_swara_service:service_manager find;

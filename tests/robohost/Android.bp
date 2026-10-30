@@ -1,0 +1,21 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// The app Yasvara's Robolectric tests run inside. Robolectric's newest prebuilt runtime is API 36,
+// while every app built against this tree asks for 37, and the tree's own runtime cannot start on
+// a host (Lineage's asset manager opens /system/framework/org.lineageos.platform-res.apk). This
+// codeless app declares API 36, so the tests run on the prebuilt runtime.
+android_app {
+    name: "YasvaraRoboHost",
+    manifest: "AndroidManifest.xml",
+    sdk_version: "current",
+    min_sdk_version: "36",
+    target_sdk_version: "36",
+    visibility: ["//vendor/yasvara/tests:__subpackages__"],
+}

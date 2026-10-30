@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-FileCopyrightText: The Yasvara Project
+     SPDX-License-Identifier: Apache-2.0
+-->
+<resources>
+    <!-- The launcher carries the ROM's name, as Pixel Launcher does; derived_app_name points here. -->
+    <string name="lineageos_app_name" translatable="false">Yasvara Launcher</string>
+</resources>

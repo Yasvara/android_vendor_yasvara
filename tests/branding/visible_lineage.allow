@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# What may still say "Lineage" in the shipped APKs and recovery (SPEC-0004 §4.7): Legal &
+# credits, licence texts, copyright headers, and text no user sees. One entry per line:
+#
+#   <file name, or *> <TAB> res:<resource glob> | re:<Python regex in the string> <TAB> <why>
+#
+# res: entries cover every locale of that resource. Keep entries narrow: a broad pattern hides
+# the next string that names LineageOS.
+
+# Legal & credits (About phone), the one page that names LineageOS.
+Settings.apk	res:string/lineagelicense_title	Legal & credits: "LineageOS legal", LineageOS's legal notices
+Settings.apk	res:string/yasvara_legal_*	Legal & credits: introduction, "Built on LineageOS", trademark line
+
+# Not shown to users.
+*	re:\u202e	pseudo-locale ar-XB (developer option): aapt2 derives it from the stock text
+org.lineageos.platform-res.apk	res:string/config_externalSystemServer	a class name
+org.lineageos.platform-res.apk	res:array/config_externalLineageServices	class names
+org.lineageos.platform-res.apk	res:array/config_deviceKeyHandlerLibs	an APK path
+recovery	re:^ro\.lineage\.	system property names recovery reads
+
+# LineageOS statistics reports to LineageOS, so Yasvara does not offer it: its entries are gone
+# from Trust and from the parts catalog (visible_lineage.sh fails if either comes back), and
+# these strings can no longer be shown.
+LineageParts.apk	res:string/anonymous_statistics_title	unreachable: statistics entry removed
+LineageParts.apk	res:string/anonymous_statistics_summary	unreachable: statistics entry removed
+LineageParts.apk	res:string/anonymous_statistics_warning	unreachable: statistics entry removed

@@ -1,0 +1,34 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+// LiteRT (formerly TensorFlow Lite) 1.4.2 from Google Maven, Apache-2.0. Used by Laras's Depth
+// Studio to run the EdgeTAM segmentation model. The platform's own external/tensorflow is 2.11,
+// too old for the operators current model exports use.
+//
+
+package {
+    default_applicable_licenses: ["vendor_yasvara_litert_license"],
+}
+
+license {
+    name: "vendor_yasvara_litert_license",
+    license_kinds: ["SPDX-license-identifier-Apache-2.0"],
+    license_text: ["LICENSE"],
+}
+
+android_library_import {
+    name: "yasvara-litert-api",
+    aars: ["litert-api-1.4.2.aar"],
+    sdk_version: "current",
+    min_sdk_version: "21",
+}
+
+android_library_import {
+    name: "yasvara-litert",
+    aars: ["litert-1.4.2.aar"],
+    sdk_version: "current",
+    min_sdk_version: "21",
+    extract_jni: true,
+    static_libs: ["yasvara-litert-api"],
+}

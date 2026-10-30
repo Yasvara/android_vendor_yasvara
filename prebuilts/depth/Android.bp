@@ -1,0 +1,45 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+// Laras's depth build models (docs/specs/0013 §4, §10.5), read in place from
+// /system_ext/etc/yasvara/depth/ by ONNX Runtime on the CPU. Phones with too little memory for
+// ToonOut (about 3 GB while it runs) leave these out; Laras then offers the Studio's tools only.
+//
+// - toonout.onnx: ToonOut (BiRefNet fine-tuned on anime, MIT),
+//   https://github.com/MatteoKartoon/BiRefNet via huggingface.co/sprited/birefnet-toonout-onnx:
+//   the published fp16 weights, graph folded to fp32 compute with the Swin attention bias and
+//   window masks rebuilt at load (lab/depth/tools/onnx_fp32.py, onnx_w8.py half, m2_ship.py).
+//   Output equals the fp32 graph exactly on the lab inputs.
+// - isnet.onnx: ISNet-anime (skytnt/anime-segmentation, Apache-2.0), weights stored fp16. Trained
+//   on characters only, it tells the character from props in S2 and S3.
+//
+
+package {
+    default_applicable_licenses: ["vendor_yasvara_depth_license"],
+}
+
+license {
+    name: "vendor_yasvara_depth_license",
+    license_kinds: [
+        "SPDX-license-identifier-Apache-2.0",
+        "SPDX-license-identifier-MIT",
+    ],
+    license_text: ["NOTICE"],
+}
+
+prebuilt_etc {
+    name: "yasvara-depth-toonout",
+    src: "toonout.onnx",
+    filename: "toonout.onnx",
+    sub_dir: "yasvara/depth",
+    system_ext_specific: true,
+}
+
+prebuilt_etc {
+    name: "yasvara-depth-isnet",
+    src: "isnet.onnx",
+    filename: "isnet.onnx",
+    sub_dir: "yasvara/depth",
+    system_ext_specific: true,
+}

@@ -1,0 +1,11 @@
+{
+    "BRAND": "google",
+    "DEVICE": "kodiak",
+    "FINGERPRINT": "google/kodiak/kodiak:17/CD1A.260905.001.B1/16238327:user/release-keys",
+    "ID": "CD1A.260905.001.B1",
+    "MANUFACTURER": "Google",
+    "MODEL": "Pixel 11 Pro XL",
+    "PRODUCT": "kodiak",
+    "SECURITY_PATCH": "2026-09-05",
+    "DEVICE_INITIAL_SDK_INT": "36"
+}

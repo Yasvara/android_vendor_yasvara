@@ -1,0 +1,104 @@
+// One deterministic GPU workload per mode. Every invocation folds its work into a word, and each
+// workgroup folds its words in a fixed order into one checksum: a GPU that computes correctly
+// gives the same checksums at any clock, so a checksum that differs is a wrong result.
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform Params {
+    uint mode;   // 0 fp32 FMA, 1 integer, 2 memory, 3 texture
+    uint iters;
+    uint seed;
+    uint words;  // of `mem`
+} p;
+
+layout(std430, set = 0, binding = 0) readonly buffer Mem { uint mem[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Sums { uint sums[]; };
+layout(set = 0, binding = 2) uniform sampler2D tex;
+
+shared uint fold[256];
+
+uint hash(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+vec4 unit(uint h) {
+    return vec4(uvec4(h, h >> 8, h >> 16, h >> 24) & 0xffu) / 255.0 + 0.5;
+}
+
+uint fma32(uint h) {
+    vec4 a = unit(h);
+    vec4 b = unit(hash(h + 1u));
+    vec4 c = unit(hash(h + 2u));
+    for (uint i = 0u; i < p.iters; i++) {
+        a = fract(fma(a, b, c));
+        b = fract(fma(b, c, a) + 0.25);
+        c = fract(fma(c, a, b) + 0.5);
+    }
+    uvec4 x = floatBitsToUint(a) ^ floatBitsToUint(b).yzwx ^ floatBitsToUint(c).zwxy;
+    return x.x ^ (x.y * 3u) ^ (x.z * 5u) ^ (x.w * 7u);
+}
+
+uint integer(uint h) {
+    uint a = h;
+    uint b = hash(h ^ 0x9e3779b9u);
+    for (uint i = 0u; i < p.iters; i++) {
+        a = a * 1664525u + 1013904223u;
+        b ^= a >> 13;
+        b = (b << 7 | b >> 25) * 0x27d4eb2du;
+        a += b ^ (a >> 11);
+    }
+    return a ^ b;
+}
+
+// Streams the buffer: neighbouring invocations read neighbouring words, so the reads run at
+// bandwidth rather than latency.
+uint memory(uint h) {
+    uint acc = h;
+    uint n = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    for (uint i = 0u; i < p.iters; i++) {
+        acc = acc * 2654435761u + mem[(gl_GlobalInvocationID.x + i * n + i * 7919u) % p.words];
+    }
+    return acc;
+}
+
+// Neighbouring invocations sample neighbouring texels, walking every mip level.
+uint texture2(uint h) {
+    uint acc = h;
+    uint g = gl_GlobalInvocationID.x;
+    vec2 at = vec2(g & 1023u, (g >> 10) & 1023u) / 1024.0;
+    for (uint i = 0u; i < p.iters; i++) {
+        vec2 uv = at + vec2(float(i) * 0.00073, float(i) * 0.00041) + float(h & 255u) / 262144.0;
+        vec4 t = textureLod(tex, uv, float(i & 15u) * 0.5);
+        acc = hash(acc ^ floatBitsToUint(t.x) ^ (floatBitsToUint(t.y) * 3u) ^
+                   (floatBitsToUint(t.z) * 5u) ^ (floatBitsToUint(t.w) * 7u));
+    }
+    return acc;
+}
+
+void main() {
+    uint h = hash(gl_GlobalInvocationID.x ^ p.seed);
+    uint v;
+    if (p.mode == 0u) {
+        v = fma32(h);
+    } else if (p.mode == 1u) {
+        v = integer(h);
+    } else if (p.mode == 2u) {
+        v = memory(h);
+    } else {
+        v = texture2(h);
+    }
+    uint l = gl_LocalInvocationID.x;
+    fold[l] = v;
+    barrier();
+    for (uint n = 128u; n > 0u; n >>= 1) {
+        if (l < n) fold[l] = hash(fold[l]) + fold[l + n];
+        barrier();
+    }
+    if (l == 0u) sums[gl_WorkGroupID.x] = fold[0];
+}

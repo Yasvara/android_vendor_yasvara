@@ -1,0 +1,24 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// Host JVM tests of the Yasvara colour engine (SPEC-0002 §10): parity with stock SystemUI, the
+// JSON codec, pure black and the contrast guarantee. Run with `m YasvaraMonetRoboTests` and JUnit
+// on out/host/linux-x86/testcases/YasvaraMonetRoboTests/YasvaraMonetRoboTests.jar.
+android_robolectric_test {
+    name: "YasvaraMonetRoboTests",
+    srcs: ["src/**/*.kt"],
+    static_libs: [
+        "YasvaraMonet",
+        "androidx.test.ext.junit",
+        "truth",
+    ],
+    java_resource_dirs: ["config"],
+    instrumentation_for: "YasvaraRoboHost",
+    strict_mode: false,
+}

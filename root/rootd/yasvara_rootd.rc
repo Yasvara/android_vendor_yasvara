@@ -1,0 +1,34 @@
+#
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# SPEC-0006/0007. The daemon only runs while persist.yasvara.root.enabled=1 (set by
+# YasvaraRootService from the Akar page) and only once boot has completed, so it can never
+# compete with system_server's boot-time overlay/vold commits. It is not in any class
+# (`disabled`), so `class_start late_start` cannot wait for it. It binds its own socket in
+# /data/misc/yasvara_root; there is no /dev/socket entry for an app to find.
+
+on post-fs-data
+    # 0771: `shell` must traverse to run/ctl.sock (adb shell su). Apps cannot: SELinux gives them no
+    # search on this directory, and Zygote hands an enrolled app a bind of the socket instead.
+    mkdir /data/misc/yasvara_root 0771 system system
+    restorecon /data/misc/yasvara_root
+    # the socket used to live here (before it got its own run/ directory)
+    rm /data/misc/yasvara_root/ctl.sock
+
+on property:persist.yasvara.root.enabled=1 && property:sys.boot_completed=1
+    start yasvara_rootd
+
+on property:persist.yasvara.root.enabled=0
+    stop yasvara_rootd
+    # A stale set would keep projecting a client that has no daemon behind it.
+    rm /data/misc/yasvara_root/enrolled.set
+    rm /data/misc/yasvara_root/run/ctl.sock
+
+service yasvara_rootd /system/xbin/yasvara_rootd
+    user root
+    group root system
+    disabled
+    oom_score_adjust -900
+    ioprio be 7
+    seclabel u:r:yasvara_rootd:s0

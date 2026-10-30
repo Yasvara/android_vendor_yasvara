@@ -1,0 +1,28 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// Host JVM tests of Laras' data layer. They run under Robolectric for the platform's org.json,
+// which is visible only to an allow-list of paths that includes //vendor. Run with
+// `m LarasRoboTests` and JUnit on out/host/linux-x86/testcases/LarasRoboTests/LarasRoboTests.jar.
+android_robolectric_test {
+    name: "LarasRoboTests",
+    srcs: [
+        "src/**/*.kt",
+        ":Laras-theme-srcs",
+        ":Laras-depth-srcs",
+    ],
+    static_libs: [
+        "androidx.annotation_annotation",
+        "androidx.test.ext.junit",
+        "truth",
+    ],
+    java_resource_dirs: ["config"],
+    instrumentation_for: "YasvaraRoboHost",
+    strict_mode: false,
+}

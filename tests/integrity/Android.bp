@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+
+// Runs as an app's identity for prop_hook_smoke.sh. Dynamic on purpose: property reads must go
+// through the device's libc.so, the only libc with the integrity hooks. Never in a product.
+cc_test {
+    name: "yasvara_app_exec",
+    srcs: ["app_exec.c"],
+    gtest: false,
+    compile_multilib: "64",
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+}

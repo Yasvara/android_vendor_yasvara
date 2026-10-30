@@ -1,0 +1,7 @@
+yasvara_attestation                       u:object_r:yasvara_attestation_service:s0
+yasvara_update_policy                     u:object_r:yasvara_update_policy_service:s0
+yasvara_root                              u:object_r:yasvara_root_service:s0
+yasvara_layang                            u:object_r:yasvara_layang_service:s0
+layang                                    u:object_r:yasvara_layang_service:s0
+yasvara_swara                             u:object_r:yasvara_swara_service:s0
+yasvara_pentas                            u:object_r:yasvara_pentas_service:s0

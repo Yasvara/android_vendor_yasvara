@@ -1,0 +1,10 @@
+# SPEC-0006 native root.
+/system/xbin/yasvara_rootd         u:object_r:yasvara_rootd_exec:s0
+/system/xbin/yasvara_su             u:object_r:yasvara_su_client_exec:s0
+/data/misc/yasvara_root(/.*)?     u:object_r:yasvara_root_data_file:s0
+/data/misc/yasvara_root/run         u:object_r:yasvara_su_run_file:s0
+/data/misc/yasvara_root/run/ctl\.sock u:object_r:yasvara_su_socket:s0
+/data/misc/yasvara_root/enrolled\.set u:object_r:yasvara_zygote_set_file:s0
+# The shell-convenience link /system/xbin/su -> yasvara_su keeps AOSP's su_exec label: checkfc
+# rejects a second spec for that path. Exec follows the link, so the transition is decided by
+# the client's own label (no auto-transition into `su`); the link only needs to be readable.

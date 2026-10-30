@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.yasvara.roottest.admin">
+    <!-- Declared by Laras, signature level: held only because this app is platform-signed. -->
+    <uses-permission android:name="yasvara.permission.MANAGE_ROOT" />
+    <application android:label="Root test admin">
+        <receiver android:name=".Cmd" android:exported="false" android:directBootAware="true">
+            <intent-filter>
+                <action android:name="org.yasvara.roottest.admin.CMD" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

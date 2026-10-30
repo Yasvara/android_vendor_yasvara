@@ -1,0 +1,31 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+// SPEC-0005 on-device check: a minimal "store" that updates itself through a normal
+// PackageInstaller session, so the update policy gate sees a non-exempt installer.
+// Driven by run_gate_test.sh; never shipped in a product.
+
+android_test_helper_app {
+    name: "YasvaraTestStore",
+    srcs: ["src/**/*.java"],
+    manifest: "AndroidManifest.xml",
+    sdk_version: "current",
+    target_sdk_version: "current",
+    min_sdk_version: "35",
+    dex_preopt: {
+        enabled: false,
+    },
+}
+
+// The same store at versionCode 2, so the vault, rollback and review paths see a real update.
+android_test_helper_app {
+    name: "YasvaraTestStoreV2",
+    srcs: ["src/**/*.java"],
+    manifest: "AndroidManifest-v2.xml",
+    sdk_version: "current",
+    target_sdk_version: "current",
+    min_sdk_version: "35",
+    dex_preopt: {
+        enabled: false,
+    },
+}

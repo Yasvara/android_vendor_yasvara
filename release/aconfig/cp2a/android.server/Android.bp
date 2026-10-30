@@ -1,0 +1,12 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+aconfig_values {
+    name: "aconfig-values-yasvara-cp2a-android.server-all",
+    package: "android.server",
+    srcs: [
+        "*_flag_values.textproto",
+    ],
+}

@@ -1,0 +1,20 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// GPU stability check for clock and voltage tuning; pushed by gpustab.sh, never shipped.
+// stress.spv.h: glslangValidator -V --target-env vulkan1.1 --vn kStress -o stress.spv.h stress.comp
+cc_binary {
+    name: "gpustab",
+    srcs: ["gpustab.cpp"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    shared_libs: ["libvulkan"],
+    header_libs: ["vulkan_headers"],
+}

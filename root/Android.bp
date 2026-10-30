@@ -1,0 +1,62 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+// SPEC-0006: the ROM's native root. yasvara_rootd (init service) and su (its client) are
+// static executables: no dynamic linker, so the client's exec costs as little as possible
+// and Termux's LD_PRELOAD / LD_LIBRARY_PATH cannot affect either.
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// The wire formats and the grants.v1 parser, shared by both. Pure data handling; the unit
+// tests run on the host (vendor/yasvara/tests/root/host_e2e.sh).
+rust_library {
+    name: "libyasvara_root_proto",
+    crate_name: "yasvara_root_proto",
+    srcs: ["proto/src/lib.rs"],
+    edition: "2021",
+    host_supported: true,
+}
+
+// SPEC-0007 placement. Both binaries live in /system/xbin, which is root:shell 0750
+// (system/core/libcutils/fs_config.cpp), so for an app that was not enrolled `stat` of any
+// child is the same EACCES whether the file exists or not. Nothing is installed in a
+// world-searchable directory and there is no symlink in /system/bin.
+//
+// The client is `yasvara_su`, not `su`: the real path must not match AOSP's `system/xbin/su`
+// rules (04750 and the `su_exec` label that auto-transitions `shell` into the su domain).
+// Zygote projects it as /system/xbin/su inside the mount namespace of an enrolled app only.
+rust_binary {
+    name: "yasvara_rootd",
+    srcs: ["rootd/src/main.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libyasvara_root_proto",
+        "liblibc",
+    ],
+    static_executable: true,
+    install_in_xbin: true, // build/soong/rust/compiler.go (Yasvara patch)
+    init_rc: ["rootd/yasvara_rootd.rc"],
+}
+
+rust_binary {
+    name: "yasvara_su",
+    srcs: ["su/src/main.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libyasvara_root_proto",
+        "liblibc",
+    ],
+    static_executable: true,
+    install_in_xbin: true,
+}
+
+// `adb shell su` (and tsu from a shell): the link sits in the same 0750 root:shell directory as
+// the client, so it is as invisible to apps as the client itself.
+install_symlink {
+    name: "yasvara_su_xbin_link",
+    installed_location: "xbin/su",
+    symlink_target: "yasvara_su",
+}

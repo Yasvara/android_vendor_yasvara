@@ -1,0 +1,23 @@
+# Yasvara attestation service, registered by system_server under
+# "yasvara_attestation" (frameworks/base SystemServer). Reads are open to apps
+# by design; writes are gated by yasvara.permission.WRITE_ATTESTATION. Without
+# a label it fell back to default_android_service, which system_server may not
+# add and apps may not find.
+type yasvara_attestation_service, app_api_service, system_server_service, service_manager_type;
+
+# Per-app update policy (SPEC-0005), "yasvara_update_policy". Every call needs
+# yasvara.permission.MANAGE_UPDATE_POLICY, so only Laras and Settings look it up.
+type yasvara_update_policy_service, system_server_service, service_manager_type;
+
+# Layang floating windows (SPEC-0008), "yasvara_layang" plus the alias "layang" so
+# `cmd layang` works. Every call needs yasvara.permission.MANAGE_LAYANG; shell can
+# already find every service_manager_type that is not excluded in shell.te.
+type yasvara_layang_service, system_server_service, service_manager_type;
+
+# Swara per-app audio (SPEC-0010), "yasvara_swara". Every call needs
+# yasvara.permission.MANAGE_SWARA: SystemUI (Volume Panel "Apps") and Laras.
+type yasvara_swara_service, system_server_service, service_manager_type;
+
+# Pentas session control (SPEC-0012), "yasvara_pentas". It exposes only dump, so
+# nothing looks it up but dumpsys.
+type yasvara_pentas_service, system_server_service, service_manager_type;

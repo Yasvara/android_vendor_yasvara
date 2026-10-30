@@ -1,0 +1,31 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// Host tests of the Yasvara Settings home's layout (SPEC-0004 §10): every key of the stock
+// homepage XMLs has a slot, an unknown key goes to More, nothing is dropped. The stock XMLs come
+// in as java resources. Run with `m YasvaraSettingsRoboTests`, then from
+// out/host/linux-x86/testcases/YasvaraSettingsRoboTests:
+//   java -Drobolectric.offline=true -Drobolectric.dependency.dir=../android-all \
+//     -cp YasvaraSettingsRoboTests.jar:../android-all/android-all-current-robolectric-r0.jar \
+//     org.junit.runner.JUnitCore org.yasvara.settings.home.HomeLayoutTest
+android_robolectric_test {
+    name: "YasvaraSettingsRoboTests",
+    srcs: [
+        "src/**/*.kt",
+        ":Settings-yasvara-home-srcs",
+    ],
+    java_resources: [":Settings-yasvara-home-xml"],
+    static_libs: [
+        "androidx.test.ext.junit",
+        "truth",
+    ],
+    java_resource_dirs: ["config"],
+    instrumentation_for: "YasvaraRoboHost",
+    strict_mode: false,
+}

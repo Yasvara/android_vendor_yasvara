@@ -1,0 +1,37 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+// Qualcomm's Adreno Frame Motion Engine 2.0 ("frame estimation lib v1.9.2.260528"), a
+// proprietary blob shipped as it is, like the Dolby blobs. Luwes uses it as an alternative
+// motion engine when it is present (docs/specs/0018 §4.10); framefx itself never links it.
+//
+// Source: lib/arm64-v8a of com.kurogame.wutheringwaves.global. API: lab/luwes/afme/README.md.
+//
+
+package {
+    default_applicable_licenses: ["vendor_yasvara_afme_license"],
+}
+
+license {
+    name: "vendor_yasvara_afme_license",
+    license_kinds: ["legacy_proprietary"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libframeestimationVK",
+    system_ext_specific: true,
+    compile_multilib: "64",
+    srcs: ["libframeestimationVK.so"],
+    strip: {
+        none: true,
+    },
+    check_elf_files: false,
+    shared_libs: [
+        "libEGL",
+        "libGLESv2",
+        "libGLESv3",
+        "liblog",
+        "libvulkan",
+    ],
+}
