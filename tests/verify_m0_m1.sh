@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# Device checks for SPEC-0002/0003 M0 and SPEC-0002 M1 on a freshly flashed userdebug build.
+# Device checks for on a freshly flashed userdebug build.
 # Prints one line per check; details go to $OUT. Leaves the user's colour and theme settings as
 # it found them (each sub-script restores what it changes).
 set -u

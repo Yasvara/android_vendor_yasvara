@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: The Yasvara Project
 // SPDX-License-Identifier: Apache-2.0
 
-//! Spawn-cost benchmark for SPEC-0006 §10: `bench N -- CMD A… -- CMD B…` runs the two commands
+//! Spawn-cost benchmark: `bench N -- CMD A… -- CMD B…` runs the two commands
 //! interleaved N times each (so drift in clocks, thermals and the scheduler hits both alike)
 //! and prints p50/p90/p99/mean per command and the p50/mean overhead of the second over the
 //! first.

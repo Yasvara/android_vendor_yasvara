@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0004 §10 deep links on the connected device, one line per check:
+# deep links on the connected device, one line per check:
 #   home   a deep link to the homepage with :settings:fragment_args_key scrolls the Yasvara home
 #          to that tile and pulses it ("YasvaraHome: Highlighted <key>" in logcat), and the tile
 #          is on screen afterwards (uiautomator).

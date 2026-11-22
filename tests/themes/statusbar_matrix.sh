@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0003 M1 screenshot matrix: the real status bar in every battery style and icon set, in
+# screenshot matrix: the real status bar in every battery style and icon set, in
 # fixed states (SystemUI demo mode), on dark and light backgrounds. Writes the crops and an
 # index.html to $OUT. Puts back every setting it changes, also when interrupted.
 #

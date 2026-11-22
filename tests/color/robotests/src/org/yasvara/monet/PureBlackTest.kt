@@ -12,7 +12,7 @@ import com.google.ux.material.libmonet.hct.Hct
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Pure black lives in the generated overlays and keeps the tint (SPEC-0002 §4.3 step 7). */
+/** Pure black lives in the generated overlays and keeps the tint (step 7). */
 @RunWith(AndroidJUnit4::class)
 class PureBlackTest {
     private val seed = Seeds.presets[5]

@@ -8,7 +8,7 @@ package org.yasvara.monet
 import com.android.systemui.monet.ColorScheme
 import com.google.ux.material.libmonet.hct.Hct
 
-/** The 24 test seeds of SPEC-0002 §10: the 16 preset seeds and 8 edge cases. */
+/** The 24 test seeds: the 16 preset seeds and 8 edge cases. */
 object Seeds {
     val presets = listOf(
         0xFF1E6FA8.toInt(), // Laut

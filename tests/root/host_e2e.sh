@@ -10,7 +10,8 @@
 set -u -o pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../../.." && pwd)"                  # …/src
-W="${TMPDIR:-/tmp}/yasvara-root-e2e-$$"
+# Always /tmp: the sockets live in here and sun_path holds 108 bytes, which a long $TMPDIR exceeds.
+W="$(mktemp -d /tmp/yre.XXXXXX)"
 mkdir -p "$W/ws" "$W/data"
 DAEMON=""
 trap '[ -n "$DAEMON" ] && kill $DAEMON 2>/dev/null; rm -rf "$W"' EXIT
@@ -76,12 +77,20 @@ echo "== policy"
 out=$("$SU" -c id 2>&1 </dev/null); rc=$?
 expect "no policy file → denied" "not enrolled" "$out"
 [ $rc = 1 ] && ok "denied exit code 1" || bad "denied exit code $rc"
+# The request is queued before the verdict is read; one larger than the socket buffer blocks
+# until the daemon closes, and the verdict must still come out ahead of the reset.
+BIG=$(head -c 120000 /dev/zero | tr '\0' x)   # one argument is capped at 128 KiB
+out=$(timeout 5 "$SU" -c "$BIG" 0 "$BIG" "$BIG" 2>&1 </dev/null); rc=$?
+expect "denied with a large queued request → still the reason" "not enrolled" "$out"
+[ $rc = 1 ] && ok "large queued request: exit code 1, no hang" || bad "large queued request: exit code $rc"
 
 grants 0 1 "$ME root req 0 0 - sig com.test"
 out=$("$SU" -s /bin/sh -c 'echo hello; echo err >&2; exit 7' 2>&1 </dev/null); rc=$?
 expect "enrolled runs the command (stdout)" "hello" "$out"
 expect "enrolled runs the command (stderr)" "err" "$out"
 [ $rc = 7 ] && ok "exit code is the command's" || bad "exit code $rc, wanted 7"
+out=$(timeout 5 "$SU" -c "$BIG" 0 "$BIG" "$BIG" 2>&1 </dev/null)
+expect "oversized request: the session's reason, not a broken pipe" "bad request" "$out"
 
 grants 0 2
 out=$("$SU" -s /bin/sh -c true 2>&1 </dev/null); expect "revocation is effective on the next request" "not enrolled" "$out"
@@ -95,7 +104,7 @@ out=$("$SU" -s /bin/sh -c true 2>&1 </dev/null); expect "expired grant refuses" 
 grants 0 5 "$ME root req 0 0 not-this-boot sig com.test"
 out=$("$SU" -s /bin/sh -c true 2>&1 </dev/null); expect "'until reboot' grant of another boot refuses" "expired" "$out"
 
-echo "== enrolled.set (SPEC-0007: what Zygote reads)"
+echo "== enrolled.set (what Zygote reads)"
 grants 0 5 "10195 root req 0 0 - sig com.a" "10100 shell req 0 0 - sig com.b"
 sleep 0.3                                              # inotify → daemon rewrites the set
 [ "$(od -An -tu4 -v "$W/data/enrolled.set" | tr -s ' ' | sed 's/^ //')" = "10100 10195" ] \
@@ -117,6 +126,13 @@ expect "…stderr too" "relayed-err" "$out"
 out=$("$SU" -s /bin/sh -c '/usr/bin/head -c 3000000 /dev/zero | /usr/bin/wc -c' 2>/dev/null </dev/null); expect "3 MB through the relay arrives whole" "3000000" "$out"
 "$SU" -s /bin/sh -c 'exit 5' >/dev/null 2>&1 </dev/null; [ $? = 5 ] && ok "SHELL tier exit code" || bad "SHELL tier exit code"
 out=$(echo ok | "$SU" -s /bin/sh -c 'read x; echo got-$x' 2>&1); expect "SHELL tier reads one line of stdin" "got-ok" "$out"
+
+echo "== fallback: shells that cannot be an exec-time entrypoint (fork + setcon)"
+out=$("$SU" -s /bin/bash -c 'echo fb-$((1+1)); exit 4' 2>&1 </dev/null); rc=$?
+expect "SHELL tier, custom shell runs" "fb-2" "$out"; [ $rc = 4 ] && ok "…exit code" || bad "…exit code $rc"
+grants 0 61 "$ME root req 0 0 - sig com.test"
+out=$(echo in-fb | "$SU" -s /bin/bash -c '/bin/cat; exit 6' 2>&1); rc=$?
+expect "ROOT tier, custom shell runs" "in-fb" "$out"; [ $rc = 6 ] && ok "…exit code" || bad "…exit code $rc"
 
 echo "== environment and arguments"
 grants 0 7 "$ME root req 0 0 - sig com.test"
@@ -190,7 +206,8 @@ expect "audit has START" "|START|" "$a"; expect "audit has DENY" "|DENY|" "$a"
 expect "audit has EXEC" "|EXEC|" "$a"; expect "audit has EXIT" "|EXIT|" "$a"
 
 echo "== limits"
-grants 0 9 "$ME root req 0 0 - sig com.test"
+# global: under a confined grant each su briefly holds a second slot for its namespace retry
+grants 0 9 "$ME root global 0 0 - sig com.test"
 PIDS=""
 for i in $(seq 1 20); do "$SU" -s /bin/sh -c '/bin/sleep 4' >/dev/null 2>&1 </dev/null & PIDS="$PIDS $!"; done
 sleep 0.8
@@ -219,6 +236,19 @@ out=$(probe "$W/sock"); expect "confined grant asks for the namespace" "wants" "
 if [[ "$out" == *" 0" ]]; then bad "confined grant runs without a namespace fd"; else ok "confined grant refuses a request without a namespace fd"; fi
 grants 0 31 "$ME root global 0 0 - sig com.test"
 out=$(probe "$W/sock"); expect "global grant does not ask for the namespace" "global 0" "$out"
+echo "== master switch and stop"
+{ echo "# yasvara-root grants v1 enabled=0 frozen=0 version=40"; echo "$ME root global 0 0 - sig com.test"; } > "$W/data/grants.v1.new"
+mv "$W/data/grants.v1.new" "$W/data/grants.v1"; sleep 0.2
+out=$("$SU" -s /bin/sh -c true 2>&1 </dev/null); expect "enabled=0 refuses a granted uid" "root is off" "$out"
+[ -s "$W/data/enrolled.set" ] && bad "enabled=0 still projects someone" || ok "enabled=0 projects nobody"
+grants 0 41 "$ME root global 0 0 - sig com.test"; sleep 0.2
+[ -s "$W/data/enrolled.set" ] && ok "back on: projected again" || bad "back on: nobody projected"
+# init stops it with SIGTERM first (gentle_kill): nothing may be left that reads as running.
+kill -TERM "$DAEMON"; for _ in $(seq 1 20); do kill -0 "$DAEMON" 2>/dev/null || break; sleep 0.05; done
+kill -0 "$DAEMON" 2>/dev/null && bad "SIGTERM: daemon still running" || ok "SIGTERM: daemon exits"
+[ -e "$W/sock" ] && bad "SIGTERM: socket left behind" || ok "SIGTERM: socket removed"
+[ -e "$W/data/enrolled.set" ] && bad "SIGTERM: projection set left behind" || ok "SIGTERM: projection set removed"
+DAEMON=""
 echo "== socket handed over by init (bound, not listening)"
 # init creates the socket and binds it but never calls listen(); the daemon has to. Without it
 # clients get ECONNREFUSED and epoll reports EPOLLHUP forever (a busy loop). Found on the

@@ -13,3 +13,15 @@ cc_test {
         "-Werror",
     ],
 }
+
+cc_test {
+    name: "yasvara_vfs_probe",
+    srcs: ["vfs_probe.c"],
+    gtest: false,
+    compile_multilib: "64",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}

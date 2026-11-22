@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0004 §4.1 motion-token lint: new Yasvara Compose code takes springs and durations only
+# motion-token lint: new Yasvara Compose code takes springs and durations only
 # from MaterialTheme.motionScheme. Fails on a tween(), spring(), keyframes or repeatable spec
 # written with literal numbers in the Yasvara sources below.
 #

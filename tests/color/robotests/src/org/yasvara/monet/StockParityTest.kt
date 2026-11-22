@@ -17,7 +17,7 @@ import org.junit.runner.RunWith
 
 /**
  * With every knob neutral, the engine must produce exactly what stock SystemUI applies
- * (SPEC-0002 §3.3, §10): same resource names, same order, same bits.
+ * same resource names, same order, same bits.
  */
 @RunWith(AndroidJUnit4::class)
 class StockParityTest {

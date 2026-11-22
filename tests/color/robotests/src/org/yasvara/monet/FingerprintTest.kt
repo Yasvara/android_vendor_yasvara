@@ -10,7 +10,7 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The fingerprint Laras and SystemUI compare after an apply (SPEC-0002 §3.3). */
+/** The fingerprint Laras and SystemUI compare after an apply. */
 @RunWith(AndroidJUnit4::class)
 class FingerprintTest {
     private val seed = Seeds.presets[2]

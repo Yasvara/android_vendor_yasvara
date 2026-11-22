@@ -1,0 +1,9 @@
+# Delta Force take from lab/haptics/v3 (rounds from the HUD ammo counter). "auto": one trigger pull.
+11.3 19.3 75 auto rifle, ~660 rpm
+31.5 35.0 33 machine pistol, ~1100 rpm, span runs past the burst
+39.5 42.7 11 pistol
+44.0 46.0  7 rifle taps
+47.0 50.5 22 pistol
+57.3 62.0 33 pistol
+64.5 70.5 30 pistol
+82.8 88.0 31 rifle

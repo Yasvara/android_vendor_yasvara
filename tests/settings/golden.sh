@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0004 §10 review screenshots of the Settings home: light and dark, font scale 1.0 and
+# review screenshots of the Settings home: light and dark, font scale 1.0 and
 # 2.0, top of the page and scrolled, into golden/ next to this script (not pixel-gated).
 # The screen must be on and unlocked. Restores the night mode and font scale it found.
 set -u

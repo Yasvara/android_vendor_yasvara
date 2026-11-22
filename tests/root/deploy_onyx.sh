@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0006: puts the native root of the current build on a POCO F7 (onyx) through the overlay
+# puts the native root of the current build on a POCO F7 (onyx) through the overlay
 # (like install.sh), reboots once, labels the new files, starts the daemon and runs
 # run_device_tests.sh. Nothing is flashed; `./install.sh --reset` takes everything back out.
 #
@@ -29,7 +29,7 @@ ash() { adb shell "$@" | tr -d '\r'; }
 wait_boot() { adb wait-for-device; until [ "$(ash getprop sys.boot_completed)" = 1 ]; do sleep 3; done; }
 
 [ -d "$OUT" ] || { echo "no build output at $OUT"; exit 2; }
-for f in system/xbin/yasvara_rootd system/xbin/yasvara_su system/etc/init/yasvara_rootd.rc system/lib64/libandroid_runtime.so system/framework/services.jar \
+for f in system/xbin/yasvara_rootd system/xbin/yasvara_su system/etc/init/yasvara_sessiond.rc system/lib64/libandroid_runtime.so system/framework/services.jar \
          system_ext/priv-app/Laras/Laras.apk odm/etc/selinux/precompiled_sepolicy; do
   [ -e "$OUT/$f" ] || { echo "missing build output: $f (run ./build.sh onyx first)"; exit 2; }
 done
@@ -45,7 +45,7 @@ adb root >/dev/null 2>&1; adb wait-for-device
 FILES=(
   system/xbin/yasvara_rootd
   system/xbin/yasvara_su
-  system/etc/init/yasvara_rootd.rc
+  system/etc/init/yasvara_sessiond.rc
   system/lib64/libandroid_runtime.so
   system/framework/services.jar
   system/framework/services.jar.prof
@@ -67,9 +67,10 @@ for f in "${FILES[@]}"; do
   [ -f "$OUT/$f" ] || continue
   [ "${DEV[/$f]-}" = "$(sha1sum "$OUT/$f" | cut -d' ' -f1)" ] || PUSH+=("$f")
 done
-# SPEC-0007 moved everything out of world-searchable directories; leftovers of the old layout
+# moved everything out of world-searchable directories; leftovers of the old layout
 # would define yasvara_rootd twice (init rc) and keep a public su.
-OLD=(/system/bin/su /system_ext/bin/su /system_ext/bin/yasvara_rootd /system_ext/etc/init/yasvara_rootd.rc)
+OLD=(/system/bin/su /system_ext/bin/su /system_ext/bin/yasvara_rootd /system_ext/etc/init/yasvara_rootd.rc
+     /system/etc/init/yasvara_rootd.rc)
 LEFT=$(ash "ls ${OLD[*]} 2>/dev/null" | wc -l)
 say "${#PUSH[@]} files differ; $LEFT files of the old layout to remove"
 printf '    %s\n' "${PUSH[@]-}"
@@ -88,7 +89,7 @@ done
 ash "rm -f ${OLD[*]}" >/dev/null
 # `adb shell su` keeps working: a symlink next to the real client, inside the 0750 directory.
 ash "ln -sf yasvara_su /system/xbin/su" >/dev/null
-ash "chmod 755 /system/xbin/yasvara_rootd /system/xbin/yasvara_su; chmod 644 /system/etc/init/yasvara_rootd.rc" >/dev/null
+ash "chmod 755 /system/xbin/yasvara_rootd /system/xbin/yasvara_su; chmod 644 /system/etc/init/yasvara_sessiond.rc" >/dev/null
 ash sync >/dev/null
 say "pushed; rebooting to load the new policy, init rc and system_server"
 adb reboot
@@ -99,12 +100,12 @@ adb root >/dev/null 2>&1; adb wait-for-device
 # ---- the new files could not be labelled before the policy that names their types ------------
 # (the overlay comes back read-only after a boot: labelling needs it writable again)
 adb remount >/dev/null 2>&1
-ash "restorecon -F -R /system/xbin/su /system/xbin/yasvara_su /system/xbin/yasvara_rootd /system/etc/init/yasvara_rootd.rc /data/misc/yasvara_root" >/dev/null
+ash "restorecon -F -R /system/xbin/su /system/xbin/yasvara_su /system/xbin/yasvara_rootd /system/etc/init/yasvara_sessiond.rc /data/misc/yasvara_root" >/dev/null
 say "labels: $(ash ls -LZ /system/xbin/yasvara_rootd | cut -d' ' -f1) / $(ash ls -LZ /system/xbin/yasvara_su | cut -d' ' -f1)"
-ash "setprop persist.yasvara.root.enabled 0; sleep 1; setprop persist.yasvara.root.enabled 1" >/dev/null
-for _ in $(seq 1 20); do [ "$(ash getprop init.svc.yasvara_rootd)" = running ] && break; sleep 0.5; done
-say "daemon: $(ash getprop init.svc.yasvara_rootd) ($(ash ps -AZ | grep yasvara_rootd | head -1 | cut -d' ' -f1))"
-say "system_server: $(ash pidof system_server) service: $(ash service check yasvara_root)"
+ash "setprop ctl.stop yasvara_sessiond; sleep 1; setprop ctl.start yasvara_sessiond" >/dev/null
+for _ in $(seq 1 20); do [ "$(ash getprop init.svc.yasvara_sessiond)" = running ] && break; sleep 0.5; done
+say "daemon: $(ash getprop init.svc.yasvara_sessiond) ($(ash ps -AZ | grep yasvara_rootd | head -1 | cut -d' ' -f1))"
+say "system_server: $(ash pidof system_server) service: $(ash service check yasvara_session)"
 
 if [ $TESTS = 1 ]; then say "running the device tests"; OUT="$OUT" "$HERE/run_device_tests.sh"; fi
 say "done"

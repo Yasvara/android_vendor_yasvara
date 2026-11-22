@@ -14,7 +14,7 @@ import org.junit.runner.RunWith
 import org.w3c.dom.Element
 
 /**
- * SPEC-0004 §10: the Yasvara home's key → group mapping against the stock homepage XMLs of
+ * the Yasvara home's key → group mapping against the stock homepage XMLs of
  * packages/apps/Settings (phone, expressive and desktop). A key a rebase adds fails
  * [everyStockKeyHasASlot] until it is placed on purpose.
  */
@@ -101,7 +101,7 @@ class HomeLayoutTest {
 
     @Test
     fun injectedTileInAStockCategoryJoinsSystem() {
-        // Digital Wellbeing and Google inject into stock categories (SPEC-0004 §4.2: System).
+        // Digital Wellbeing and Google inject into stock categories (System).
         for (category in HomeLayout.STOCK_CATEGORIES) {
             assertWithMessage(category)
                 .that(HomeLayout.groupOf("dashboard_tile_pref_com.example.Tile", category))

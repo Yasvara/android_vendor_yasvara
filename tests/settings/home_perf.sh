@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0004 §8 metrics of the Settings home on the connected device, one line each:
+# metrics of the Settings home on the connected device, one line each:
 #   cold start     `am start -W` TotalTime, median of N cold launches
 #   first frame    "Displayed" and "Fully drawn" from ActivityTaskManager, medians
 #   entrance UI    UI-thread ms per frame while the home enters (median / p90 / max)

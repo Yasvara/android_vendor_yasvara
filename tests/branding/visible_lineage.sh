@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0004 §4.7: no user-visible "Lineage" outside Legal & credits, licence texts and
+# no user-visible "Lineage" outside Legal & credits, licence texts and
 # copyright headers. Dumps the string tables (aapt2 dump strings) of every APK the build
 # installs, plus recovery's binary strings, and fails on a "Lineage" that
 # visible_lineage.allow does not explain. Also fails if LineageOS statistics, whose strings are
@@ -119,7 +119,7 @@ for apk in installed_apks():
             continue
         failures.append(f"{name}: {', '.join(owners) or '(not a resource value)'}: {hit[:160]!r}")
 
-# Recovery: the strings of its binaries (the logo is an image: SPEC-0004 M3 replaces it).
+# Recovery: the strings of its binaries (the logo is an image: replaces it).
 recovery_bins = glob.glob(os.path.join(out, "recovery", "root", "system", "bin", "recovery"))
 for path in recovery_bins:
     scanned += 1

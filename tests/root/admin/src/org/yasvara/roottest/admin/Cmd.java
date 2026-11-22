@@ -28,7 +28,7 @@ public final class Cmd extends BroadcastReceiver {
         String op = intent.getStringExtra("op");
         String tag = intent.getStringExtra("tag") == null ? "t" : intent.getStringExtra("tag");
         try {
-            IBinder b = ServiceManager.getService("yasvara_root");
+            IBinder b = ServiceManager.getService("yasvara_session");
             if (b == null) {
                 Log.i(TAG, "[" + tag + "] no service");
                 return;

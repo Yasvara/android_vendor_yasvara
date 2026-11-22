@@ -7,7 +7,7 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// Host tests of the Yasvara Settings home's layout (SPEC-0004 §10): every key of the stock
+// Host tests of the Yasvara Settings home's layout: every key of the stock
 // homepage XMLs has a slot, an unknown key goes to More, nothing is dropped. The stock XMLs come
 // in as java resources. Run with `m YasvaraSettingsRoboTests`, then from
 // out/host/linux-x86/testcases/YasvaraSettingsRoboTests:

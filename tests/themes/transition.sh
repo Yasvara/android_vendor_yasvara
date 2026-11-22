@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# Runs a no-op theme apply transition (SPEC-0002 §7.1, M0 exit): SystemUI covers the display
+# Runs a no-op theme apply transition (M0 exit): SystemUI covers the display
 # with a snapshot, and the reveal runs as soon as the caller reports ready. Prints SystemUI's
 # frame stats for the reveal. Needs `adb root` (the provider requires CUSTOMIZE_SYSTEM_UI).
 #

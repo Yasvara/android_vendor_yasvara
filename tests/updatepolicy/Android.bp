@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: The Yasvara Project
 // SPDX-License-Identifier: Apache-2.0
 //
-// SPEC-0005 on-device check: a minimal "store" that updates itself through a normal
+// on-device check: a minimal "store" that updates itself through a normal
 // PackageInstaller session, so the update policy gate sees a non-exempt installer.
 // Driven by run_gate_test.sh; never shipped in a product.
 

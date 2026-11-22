@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: The Yasvara Project
 // SPDX-License-Identifier: Apache-2.0
 //
-// SPEC-0006 on-device checks. Two small apps, never shipped:
+// on-device checks. Two small apps, never shipped:
 //  * YasvaraRootTestPeer: an ordinary app (targetSdk 28 like Termux, so it runs as
 //    untrusted_app_27) that runs `su` and logs what happened. It is the "Termux".
 //  * YasvaraRootTestAdmin: platform-signed, holds MANAGE_ROOT, so it can drive
@@ -34,7 +34,7 @@ android_test_helper_app {
     },
 }
 
-// Spawn-cost benchmark (SPEC-0006 §10): `yasvara_su_bench 500 -- /system/bin/sh -c : -- su -c :`.
+// Spawn-cost benchmark: `yasvara_su_bench 500 -- /system/bin/sh -c: -- su -c:`.
 // Not part of any product package; build with `-k yasvara_su_bench`.
 rust_binary {
     name: "yasvara_su_bench",
@@ -44,7 +44,7 @@ rust_binary {
     system_ext_specific: true,
 }
 
-// SPEC-0007 T0: what an app that is not enrolled can observe about Akar (exposure.sh).
+// T0: what an app that is not enrolled can observe about Akar (exposure.sh).
 android_test_helper_app {
     name: "YasvaraRootTestScan",
     srcs: ["scan/src/**/*.java"],

@@ -14,7 +14,7 @@ import org.junit.runner.RunWith
 
 /**
  * Every knob is applied before roles are solved, so the contrast solver still holds: at any
- * contrast level ≥ 0 every guarded pair reaches text contrast (SPEC-0002 §4.3, §10).
+ * contrast level ≥ 0 every guarded pair reaches text contrast.
  */
 @RunWith(AndroidJUnit4::class)
 class ContrastGuardTest {

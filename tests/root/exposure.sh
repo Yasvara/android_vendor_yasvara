@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0007 T0/T3: what an app that is not enrolled for root can observe about Akar.
+# T0/T3: what an app that is not enrolled for root can observe about Akar.
 #
 #   exposure.sh [-o report.txt]     install the scanner, run it, print the leaks ("!" lines)
 #   exposure.sh --diff A.txt B.txt  the gate: exit 1 if the reports differ

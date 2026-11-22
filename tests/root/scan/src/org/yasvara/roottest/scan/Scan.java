@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
- * SPEC-0007 T0: records everything an app that is NOT enrolled for root can observe about
+ * T0: records everything an app that is NOT enrolled for root can observe about
  * Akar, as sorted "section|key|value" lines in files/report.txt. A line starting with "!" is a
  * leak: something that names or demonstrates Akar. Lines are free of pids, inode numbers and
  * times so two reports can be diffed (exposure.sh).
@@ -48,7 +48,7 @@ public final class Scan extends BroadcastReceiver {
     /** What any userdebug ROM carries; reported for information, not as an Akar leak. */
     private static final Pattern STOCK = Pattern.compile("(?i)magisk|ksu|supersu|\\bsu_exec\\b|u:r:su:s0");
     /** Directory entries worth reporting by name. */
-    private static final Pattern NAMES = Pattern.compile("(?i)^su$|^\\.s$|yasvara_(su|rootd)|akar|magisk|ksu");
+    private static final Pattern NAMES = Pattern.compile("(?i)^su$|^\\.s$|yasvara_(su|rootd|sessiond)|akar|magisk|ksu");
 
     private final TreeSet<String> out = new TreeSet<>();
     private int leaks;
@@ -132,6 +132,7 @@ public final class Scan extends BroadcastReceiver {
                 "/data/misc/yasvara_root/enrolled.set",
                 "/system/xbin/yasvara_su", "/system/xbin/yasvara_rootd", "/system/xbin/.s",
                 "/system_ext/xbin", "/system/etc/init/yasvara_rootd.rc",
+                "/system/etc/init/yasvara_sessiond.rc",
                 "/system_ext/etc/init/yasvara_rootd.rc", "/system_ext/etc/selinux",
         };
         for (String p : paths) {
@@ -167,7 +168,9 @@ public final class Scan extends BroadcastReceiver {
                 "/system_ext/etc/selinux/system_ext_file_contexts",
                 "/system_ext/etc/selinux/system_ext_service_contexts",
                 "/system_ext/etc/selinux/system_ext_property_contexts",
-                "/system_ext/etc/init/yasvara_rootd.rc", "/proc/net/unix", "/proc/self/mountinfo",
+                "/system_ext/etc/init/yasvara_rootd.rc", "/system/etc/init/yasvara_sessiond.rc",
+                "/system/etc/selinux/plat_property_contexts", "/dev/__properties__/property_info",
+                "/proc/net/unix", "/proc/self/mountinfo",
                 "/proc/mounts", "/proc/version", "/proc/cmdline", "/sys/fs/selinux/enforce",
                 "/proc/self/attr/current",
         };

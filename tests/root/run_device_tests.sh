@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0006 on-device checks of yasvara_rootd + su. Needs `adb root` (Rooted debugging) and a
+# on-device checks of yasvara_rootd + su. Needs `adb root` (Rooted debugging) and a
 # build with the daemon. Two phases:
 #
 #   A. daemon only — no unlock needed. The test plays system_server: it writes grants.v1 itself
@@ -21,7 +21,7 @@ ADMIN_APK=$OUT/testcases/YasvaraRootTestAdmin/arm64/YasvaraRootTestAdmin.apk
 PEER=org.yasvara.roottest.peer
 ADMIN=org.yasvara.roottest.admin
 DIR=/data/misc/yasvara_root
-# SPEC-0007: apps see the client as /system/xbin/su only inside their own mount namespace, and only
+# apps see the client as /system/xbin/su only inside their own mount namespace, and only
 # when enrolled at the time they start; the real file is /system/xbin/yasvara_su.
 SU=/system/xbin/su
 REAL_SU=/system/xbin/yasvara_su
@@ -56,9 +56,13 @@ adb install -r -t -g "$ADMIN_APK" >/dev/null 2>&1 || echo "  (admin app not inst
 sh_ setprop debug.yasvara.root.test_admin 1
 UID_PEER=$(sh_ pm list packages -U $PEER | sed -n 's/.*uid:\([0-9]*\).*/\1/p' | head -1)
 echo "  peer uid $UID_PEER; ROM: $(sh_ getprop ro.build.id)"
-sh_ setprop persist.yasvara.root.enabled 1
-for _ in $(seq 1 20); do [ "$(sh_ getprop init.svc.yasvara_rootd)" = running ] && break; sleep 0.5; done
-expect "daemon is running" "running" "$(sh_ getprop init.svc.yasvara_rootd)"
+sh_ setprop ctl.start yasvara_sessiond
+for _ in $(seq 1 20); do [ "$(sh_ getprop init.svc.yasvara_sessiond)" = running ] && break; sleep 0.5; done
+expect "daemon is running" "running" "$(sh_ getprop init.svc.yasvara_sessiond)"
+# A stale persisted switch from older builds shows up here too: persisted properties cannot be
+# deleted by init, only edited out of /data/property/persistent_properties.
+named=$(sh_ "getprop | grep -E 'yasvara\\.root\\.|yasvara_rootd'")
+[ -z "$named" ] && ok "no property names the daemon" || bad "properties name the daemon: $named"
 expect "socket exists with the right label" "yasvara_su_socket" "$(sh_ ls -lZ $DIR/run/ctl.sock)"
 expect "daemon domain" "u:r:yasvara_rootd:s0" "$(sh_ ps -AZ | grep yasvara_rootd)"
 expect "client is installed and labelled" "yasvara_su_client_exec" "$(sh_ ls -LZ $REAL_SU)"
@@ -139,7 +143,7 @@ expect "tsu-style invocation (user, --preserve-environment, -c)" "0" "$out"
 # process that is already running keeps working (no restart of the app needed).
 grants 0 "$UID_PEER root global 1 0 - sig $PEER"
 out=$(peer prerestart "$SU -c id"); expect "before a daemon restart" "uid=0(root)" "$out"
-sh_ "setprop persist.yasvara.root.enabled 0; sleep 1; setprop persist.yasvara.root.enabled 1; sleep 2" >/dev/null
+sh_ "setprop ctl.stop yasvara_sessiond; sleep 1; setprop ctl.start yasvara_sessiond; sleep 2" >/dev/null
 out=$(FRESH=0 peer postrestart "$SU -c id"); expect "a running app still reaches the daemon after it restarted" "uid=0(root)" "$out"
 
 grants 1 "$UID_PEER root global 1 0 - sig $PEER"
@@ -166,7 +170,7 @@ out=$(timeout 20 adb shell -tt 'su -c "echo PTY=\$((40+2)); [ -t 0 ] && echo TTY
 expect "pty: command output" "PTY=42" "$out"
 expect "pty: shell sees a terminal" "TTY=yes" "$out"
 
-echo "== phase A: latency (uid 0 caller, interleaved, SPEC-0006 §10: p50 <= +3 ms, p99 <= +8 ms)"
+echo "== phase A: latency (uid 0 caller, interleaved, p50 <= +3 ms, p99 <= +8 ms)"
 BENCH=$OUT/system_ext/bin/yasvara_su_bench
 if [ -f "$BENCH" ]; then
   adb push -q "$BENCH" /data/local/tmp/yasvara_su_bench && adb shell chmod 755 /data/local/tmp/yasvara_su_bench

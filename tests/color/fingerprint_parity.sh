@@ -2,10 +2,10 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# Fingerprint parity (SPEC-0002 §3.3, M1 exit): for 20 specs, the colours Laras resolves on this
+# Fingerprint parity (M1 exit): for 20 specs, the colours Laras resolves on this
 # device must be the colours SystemUI applies, bit for bit. Each spec is resolved by Laras (debug
 # intent) and applied through Settings; the two fingerprints must match. Restores the user's
-# colour spec at the end. Needs a debuggable build with SPEC-0002 M1.
+# colour spec at the end. Needs a debuggable build with.
 set -u
 key=yasvara_color
 orig=$(adb shell settings get secure $key | tr -d '\r')

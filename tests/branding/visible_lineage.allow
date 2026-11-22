@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# What may still say "Lineage" in the shipped APKs and recovery (SPEC-0004 §4.7): Legal &
+# What may still say "Lineage" in the shipped APKs and recovery: Legal &
 # credits, licence texts, copyright headers, and text no user sees. One entry per line:
 #
 #   <file name, or *> <TAB> res:<resource glob> | re:<Python regex in the string> <TAB> <why>

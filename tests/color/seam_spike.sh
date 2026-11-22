@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# M0 preview colour seam spike (SPEC-0002 §11 Q6). Applies a reference palette, screenshots the
+# M0 preview colour seam spike (Q6). Applies a reference palette, screenshots the
 # Laras lock screen canvas, restores the user's palette, then previews the reference palette as
 # a draft through each seam and screenshots again. A seam passes when its canvas matches the
 # reference wherever the palette changes anything. Needs a debuggable build with Laras M0.

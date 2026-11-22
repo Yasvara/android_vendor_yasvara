@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# Flips the system colour overlays and counts activity relaunches and recreations (SPEC-0002 §8, SPEC-0003 M0).
+# Flips the system colour overlays and counts activity relaunches and recreations.
 # Laras, SystemUI and the launcher must never relaunch on an overlay change; third-party apps
 # may. Needs a device on adb; open Laras and go home first so both have a resumed activity.
 #

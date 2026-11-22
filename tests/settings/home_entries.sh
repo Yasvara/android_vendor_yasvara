@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0004 M1: every entry of the stock homepage (stock keys and injected tiles) is on the
+# every entry of the stock homepage (stock keys and injected tiles) is on the
 # Yasvara home. Collects the entry titles of the stock homepage (yasvara_settings_home=0) and
 # every text of the Yasvara home, scrolling through each, and lists stock titles the Yasvara
 # home lacks. The screen must be on and unlocked. Restores yasvara_settings_home.

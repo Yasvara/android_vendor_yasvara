@@ -12,7 +12,7 @@ import org.json.JSONObject
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The `yasvara_color` document never breaks a reader (SPEC-0002 §4.5, §9). */
+/** The `yasvara_color` document never breaks a reader. */
 @RunWith(AndroidJUnit4::class)
 class ColorSpecCodecTest {
 

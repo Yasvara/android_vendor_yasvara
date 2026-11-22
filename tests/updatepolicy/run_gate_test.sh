@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# SPEC-0005 on-device check (adb root). YasvaraTestStore updates itself the way a store does, so
+# on-device check (adb root). YasvaraTestStore updates itself the way a store does, so
 # the update policy gate sees a non-exempt installer. Statuses are PackageInstaller's:
 #   0 success · -1 PENDING_USER_ACTION · 7 INCOMPATIBLE (from INSTALL_FAILED_USER_RESTRICTED)
 #
