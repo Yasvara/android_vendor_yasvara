@@ -1,0 +1,58 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_defaults {
+    name: "saring_defaults",
+    crate_name: "saring",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+}
+
+rust_library {
+    name: "libsaring",
+    defaults: ["saring_defaults"],
+    host_supported: true,
+}
+
+// Runtime controller, Serve-Stale DNS cache and coalesced DoT multiplexer, for netd.
+rust_ffi_static {
+    name: "libsaring_ffi",
+    defaults: ["saring_defaults"],
+    features: ["netd"],
+}
+
+rust_test_host {
+    name: "saring_test",
+    defaults: ["saring_defaults"],
+    test_suites: ["general-tests"],
+}
+
+// Speed gate; runs on the host and on the phone.
+rust_binary {
+    name: "saring_bench",
+    srcs: ["src/bin/bench.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    rustlibs: ["libsaring"],
+    host_supported: true,
+}
+
+// The list compiler, for Laras.
+rust_ffi_shared {
+    name: "libsaring_jni",
+    crate_name: "saring_jni",
+    srcs: ["jni/src/lib.rs"],
+    edition: "2021",
+    // Carried inside Laras' APK, so it brings its own runtime.
+    prefer_rlib: true,
+    rustlibs: [
+        "libsaring",
+        "libjni",
+    ],
+}

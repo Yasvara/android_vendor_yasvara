@@ -1,0 +1,23 @@
+# Host builds and `cargo test` only; the platform builds this crate with Soong (Android.bp).
+[package]
+name = "saring"
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[features]
+# Enables BoringSSL DoT socket worker for netd; host tests and Laras JNI build without libssl.
+netd = []
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "saring_bench"
+path = "src/bin/bench.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
