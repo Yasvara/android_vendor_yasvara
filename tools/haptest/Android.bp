@@ -1,0 +1,18 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// Haptic drive and accelerometer bench for the sih688x LRA; pushed by haptest.sh, never shipped.
+cc_binary {
+    name: "haptest",
+    srcs: ["haptest.cpp"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    shared_libs: ["libandroid"],
+}

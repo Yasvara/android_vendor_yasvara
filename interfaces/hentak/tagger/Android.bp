@@ -1,0 +1,25 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+
+// tagger service (vendor.yasvara.hentak.ITagger/default), hosted by the vibrator HAL.
+cc_library_static {
+    name: "libhentak_tagger",
+    vendor: true,
+    srcs: ["Tagger.cpp"],
+    export_include_dirs: ["."],
+    local_include_dirs: ["include"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder_ndk",
+        "libdl",
+        "liblog",
+        "vendor.yasvara.hentak-V1-ndk",
+    ],
+    whole_static_libs: ["libhentak_rs"],
+    export_shared_lib_headers: ["vendor.yasvara.hentak-V1-ndk"],
+    required: ["hentak_npu"],
+}

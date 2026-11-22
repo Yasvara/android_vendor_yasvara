@@ -1,0 +1,100 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+// Hentak's tagger on HTP: ONNX Runtime 1.29 with its QNN execution provider
+// (com.microsoft.onnxruntime:onnxruntime-android-qnn, MIT) and the QNN 2.42 runtime it was built
+// against (com.qualcomm.qti:qnn-runtime, Qualcomm licence), arm64 and the V73 DSP skeleton only.
+//
+// They install into /vendor/lib64/hentak and /vendor/etc/hentak/dsp, apart from onyx's own QNN
+// 2.29 in /vendor/lib64, which the camera stack uses. The vibrator HAL puts the directory on its
+// LD_LIBRARY_PATH so QNN's own dlopen of its stub finds 2.42, and ADSP_LIBRARY_PATH for the skel.
+//
+
+package {
+    default_applicable_licenses: ["vendor_yasvara_hentak_npu_license"],
+}
+
+license {
+    name: "vendor_yasvara_hentak_npu_license",
+    license_kinds: ["SPDX-license-identifier-MIT"],
+    license_text: ["NOTICE"],
+}
+
+cc_defaults {
+    name: "hentak_npu_lib_defaults",
+    vendor: true,
+    relative_install_path: "hentak",
+    check_elf_files: false,
+    strip: {
+        none: true,
+    },
+    compile_multilib: "64",
+}
+
+cc_prebuilt_library_shared {
+    name: "libonnxruntime.hentak",
+    defaults: ["hentak_npu_lib_defaults"],
+    stem: "libonnxruntime",
+    srcs: ["lib64/libonnxruntime.so"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libQnnHtp.hentak",
+    defaults: ["hentak_npu_lib_defaults"],
+    stem: "libQnnHtp",
+    srcs: ["lib64/libQnnHtp.so"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libQnnHtpV73Stub.hentak",
+    defaults: ["hentak_npu_lib_defaults"],
+    stem: "libQnnHtpV73Stub",
+    srcs: ["lib64/libQnnHtpV73Stub.so"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libQnnSystem.hentak",
+    defaults: ["hentak_npu_lib_defaults"],
+    stem: "libQnnSystem",
+    srcs: ["lib64/libQnnSystem.so"],
+}
+
+prebuilt_etc {
+    name: "libQnnHtpV73Skel.hentak",
+    vendor: true,
+    src: "dsp/libQnnHtpV73Skel.so",
+    filename: "libQnnHtpV73Skel.so",
+    relative_install_path: "hentak/dsp",
+}
+
+// The tagger: its u8 network compiled to an HTP graph on onyx (ORT EP context, QNN 2.42 V73), by
+// lab/haptics/npu/tagbench -c from lab/haptics/tagger/export_onnx.py's QDQ model.
+prebuilt_etc {
+    name: "hentak_tagger_context",
+    vendor: true,
+    src: "tagger_ctx.onnx",
+    filename: "tagger_ctx.onnx",
+    relative_install_path: "hentak",
+    required: ["hentak_tagger_context_bin"],
+}
+
+prebuilt_etc {
+    name: "hentak_tagger_context_bin",
+    vendor: true,
+    src: "tagger_ctx_qnn.bin",
+    filename: "tagger_ctx_qnn.bin",
+    relative_install_path: "hentak",
+}
+
+phony {
+    name: "hentak_npu",
+    required: [
+        "libonnxruntime.hentak",
+        "libQnnHtp.hentak",
+        "libQnnHtpV73Stub.hentak",
+        "libQnnSystem.hentak",
+        "libQnnHtpV73Skel.hentak",
+        "hentak_tagger_context",
+    ],
+}

@@ -1,0 +1,32 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+
+aidl_interface {
+    name: "vendor.yasvara.hentak",
+    srcs: ["vendor/yasvara/hentak/*.aidl"],
+    stability: "vintf",
+    vendor_available: true,
+    owner: "yasvara",
+    backend: {
+        cpp: {
+            enabled: false,
+        },
+        java: {
+            enabled: false,
+        },
+        ndk: {
+            enabled: true,
+        },
+        rust: {
+            enabled: false,
+        },
+    },
+    frozen: true,
+    versions_with_info: [
+        {
+            version: "1",
+            imports: [],
+        },
+    ],
+
+}
