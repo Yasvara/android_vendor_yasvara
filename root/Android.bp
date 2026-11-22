@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: The Yasvara Project
 // SPDX-License-Identifier: Apache-2.0
 //
-// SPEC-0006: the ROM's native root. yasvara_rootd (init service) and su (its client) are
+// the ROM's native root. yasvara_rootd (init service) and su (its client) are
 // static executables: no dynamic linker, so the client's exec costs as little as possible
 // and Termux's LD_PRELOAD / LD_LIBRARY_PATH cannot affect either.
 
@@ -20,7 +20,7 @@ rust_library {
     host_supported: true,
 }
 
-// SPEC-0007 placement. Both binaries live in /system/xbin, which is root:shell 0750
+// placement. Both binaries live in /system/xbin, which is root:shell 0750
 // (system/core/libcutils/fs_config.cpp), so for an app that was not enrolled `stat` of any
 // child is the same EACCES whether the file exists or not. Nothing is installed in a
 // world-searchable directory and there is no symlink in /system/bin.
@@ -38,7 +38,7 @@ rust_binary {
     ],
     static_executable: true,
     install_in_xbin: true, // build/soong/rust/compiler.go (Yasvara patch)
-    init_rc: ["rootd/yasvara_rootd.rc"],
+    init_rc: ["rootd/yasvara_sessiond.rc"],
 }
 
 rust_binary {

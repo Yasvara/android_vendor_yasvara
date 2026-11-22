@@ -1,19 +1,23 @@
 // SPDX-FileCopyrightText: The Yasvara Project
 // SPDX-License-Identifier: Apache-2.0
 
-//! `yasvara_rootd` — the ROM's root daemon (SPEC-0006).
+//! `yasvara_rootd` — the ROM's root daemon.
 //!
 //! Started by init once boot is complete, it binds its own socket and sleeps in `epoll_wait`
 //! until an app connects. The kernel tells it who is calling (SO_PEERCRED); the policy is a
 //! file that system_server rewrites and that is re-read, lazily, only when its inode or
 //! mtime changed. An unenrolled caller gets 8 bytes back and is dropped before a single
-//! request byte is read. An enrolled one gets a supervisor process (see `session.rs`).
+//! request byte is read. An enrolled one is run by this loop itself when its request is already
+//! queued and its shell needs neither a relay nor an in-place domain switch (`live.rs`, shell
+//! spawned by vfork); anything else gets a supervisor process (`session.rs`).
 //!
 //! Nothing here uses timers, alarms or polling: an idle daemon makes no syscalls. One inotify
 //! watch on the data directory wakes it when grants.v1 is replaced, so `enrolled.set` (the
-//! uids Zygote projects the client to, SPEC-0007) follows the policy.
+//! uids Zygote projects the client to) follows the policy.
 
+mod live;
 mod session;
+mod spawn;
 mod sys;
 
 use std::collections::HashMap;
@@ -37,7 +41,7 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub grants_path: PathBuf,
     pub events_path: PathBuf,
-    /// SPEC-0007: uids Zygote projects the client into (see `grants::enrolled_set`).
+    /// uids Zygote projects the client into (see `grants::enrolled_set`).
     pub enrolled_path: PathBuf,
     /// `--socket PATH`: bind this socket. Without it, init's inherited socket if there is one
     /// (host tests), else `<data-dir>/run/ctl.sock`.
@@ -85,6 +89,9 @@ impl Policy {
 
     /// Callers run [`Policy::refresh`] first (one stat per request).
     fn decide(&mut self, uid: u32) -> Decision {
+        if self.grants.off {
+            return Decision::Deny(Reason::Disabled);
+        }
         // A root caller (a root shell running `su`) needs no grant.
         if uid == 0 {
             return Decision::Allow(session::GrantView {
@@ -95,6 +102,7 @@ impl Policy {
             });
         }
         match self.grants.lookup(uid, sys::now_wall_ms(), &self.boot_id) {
+            Err(Refusal::Off) => Decision::Deny(Reason::Disabled),
             Err(Refusal::NotEnrolled) => Decision::Deny(Reason::NotEnrolled),
             Err(Refusal::Frozen) => Decision::Deny(Reason::Frozen),
             Err(Refusal::Expired) => Decision::Deny(Reason::Expired),
@@ -173,9 +181,9 @@ fn parse_config() -> Config {
 }
 
 /// The listening socket: the one we bind ourselves at `--socket` or `<data-dir>/run/ctl.sock`
-/// (SPEC-0007: outside /dev/socket, so apps cannot name it without the Zygote projection), or,
+/// (outside /dev/socket, so apps cannot name it without the Zygote projection), or,
 /// for host tests, one inherited from init (`ANDROID_SOCKET_yasvara_su`).
-fn listener(cfg: &Config) -> io::Result<RawFd> {
+fn listener(cfg: &Config) -> io::Result<(RawFd, Option<PathBuf>)> {
     let default = cfg.data_dir.join("run").join("ctl.sock");
     let inherited = std::env::var("ANDROID_SOCKET_yasvara_su").ok().and_then(|v| v.parse::<RawFd>().ok());
     let bound = cfg.socket_path.as_ref().or(if inherited.is_none() { Some(&default) } else { None });
@@ -201,13 +209,15 @@ fn listener(cfg: &Config) -> io::Result<RawFd> {
         })?;
         sys::cvt(unsafe { libc::chmod(addr.sun_path.as_ptr(), 0o666) })?;
         sys::cvt(unsafe { libc::listen(fd, 8) })?;
-        return Ok(fd);
+        return Ok((fd, Some(path.clone())));
     }
     let fd = inherited.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no socket"))?;
+    // init hands it over without close-on-exec; every shell would inherit it.
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     // init binds the socket but, for SOCK_STREAM, leaves listen() to the daemon. Without it
     // clients get ECONNREFUSED and epoll reports EPOLLHUP forever (a busy loop).
     sys::cvt(unsafe { libc::listen(fd, 8) })?;
-    Ok(fd)
+    Ok((fd, None))
 }
 
 /// Best-effort datagram to system_server: "this uid was refused". It rate-limits further
@@ -247,8 +257,8 @@ fn main() {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         libc::signal(libc::SIGHUP, libc::SIG_IGN);
     }
-    let lfd = match listener(&cfg) {
-        Ok(fd) => fd,
+    let (lfd, bound) = match listener(&cfg) {
+        Ok(l) => l,
         Err(e) => {
             eprintln!("yasvara_rootd: no listening socket: {e}");
             std::process::exit(1);
@@ -259,11 +269,13 @@ fn main() {
         libc::fcntl(lfd, libc::F_SETFL, fl | libc::O_NONBLOCK);
     }
 
-    // SIGCHLD is consumed through a signalfd so the whole daemon is one epoll loop.
+    // SIGCHLD and init's SIGTERM (`gentle_kill`) are consumed through a signalfd so the whole
+    // daemon is one epoll loop.
     let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
     unsafe {
         libc::sigemptyset(&mut mask);
         libc::sigaddset(&mut mask, libc::SIGCHLD);
+        libc::sigaddset(&mut mask, libc::SIGTERM);
         libc::sigprocmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut());
     }
     let sfd = unsafe { libc::signalfd(-1, &mask, libc::SFD_CLOEXEC) };
@@ -298,16 +310,23 @@ fn main() {
     let mut sessions: Vec<(libc::pid_t, u32)> = Vec::new();
     sys::audit(&cfg.data_dir, &format!("{}|START|0|{}|-|-|{}", sys::now_wall_ms(), unsafe { libc::getpid() }, p::VERSION_NAME));
 
+    let mut lives = live::Lives::default();
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
     loop {
-        let n = unsafe { libc::epoll_wait(ep, events.as_mut_ptr(), events.len() as i32, -1) };
+        // Blocks without a timeout unless a hung-up session's SIGKILL is due.
+        let n = unsafe { libc::epoll_wait(ep, events.as_mut_ptr(), events.len() as i32, lives.timeout()) };
         if n < 0 {
             if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                 continue;
             }
             std::process::exit(1);
         }
+        lives.on_timer();
         for ev in &events[..n as usize] {
+            if ev.u64 & live::TOKEN_TAG != 0 {
+                lives.on_conn(ep, (ev.u64 & 0xffff_ffff) as RawFd);
+                continue;
+            }
             if ev.u64 == 2 {
                 // grants.v1 was replaced (system_server writes it atomically): without this an
                 // app enrolled just now would never be projected, hence never reach the daemon.
@@ -317,8 +336,17 @@ fn main() {
                 continue;
             }
             if ev.u64 == 1 {
-                let mut buf = [0u8; 128];
-                unsafe { libc::read(sfd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+                let mut si: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
+                let n = unsafe { libc::read(sfd, &mut si as *mut _ as *mut libc::c_void, std::mem::size_of_val(&si)) };
+                if n > 0 && si.ssi_signo == libc::SIGTERM as u32 {
+                    // Stopped: a set left behind would keep projecting a client with no daemon
+                    // behind it, and a socket file would read as running.
+                    let _ = std::fs::remove_file(&cfg.enrolled_path);
+                    if let Some(p) = &bound {
+                        let _ = std::fs::remove_file(p);
+                    }
+                    std::process::exit(0);
+                }
                 // Reap whoever exited; the supervisor already told its client.
                 loop {
                     let mut status = 0;
@@ -327,6 +355,7 @@ fn main() {
                         break;
                     }
                     sessions.retain(|&(p, _)| p != pid);
+                    lives.on_exit(ep, pid, status, &cfg);
                 }
                 continue;
             }
@@ -351,7 +380,8 @@ fn main() {
                         }
                     }
                 }
-                handle(conn, &cfg, &mut policy, &mut limit, &mut last_event, &mut event_generation, &mut sessions, &[lfd, ep, sfd, wfd]);
+                let daemon_fds: Vec<RawFd> = [lfd, ep, sfd, wfd].into_iter().chain(lives.conns()).collect();
+                handle(conn, &cfg, &mut policy, &mut limit, &mut last_event, &mut event_generation, &mut sessions, &mut lives, ep, &daemon_fds);
             }
         }
     }
@@ -377,6 +407,8 @@ fn handle(
     last_event: &mut HashMap<u32, Instant>,
     event_generation: &mut u64,
     sessions: &mut Vec<(libc::pid_t, u32)>,
+    lives: &mut live::Lives,
+    ep: RawFd,
     daemon_fds: &[RawFd],
 ) {
     let cred = match sys::peer_cred(conn) {
@@ -417,19 +449,46 @@ fn handle(
     if sessions.len() >= MAX_SESSIONS || sessions.iter().filter(|s| s.1 == cred.uid).count() >= MAX_SESSIONS_PER_UID {
         return deny(Reason::Busy);
     }
-    // Verdict first, then fork: the client reads it and prepares its request while the session
-    // process starts (one fork off the critical path).
+    // Verdict first, before anything is read.
     if sys::send_frame_nowait(conn, &session::verdict_frame(&grant).encode()).is_err() {
         return sys::close(conn);
     }
+    let caller = session::Caller { pid: cred.pid, uid: cred.uid };
+    // The request is normally queued already (the client does not wait for the verdict).
+    let admitted = match session::take_queued(conn) {
+        None => None,
+        Some(Err(_)) => return sys::close(conn),
+        Some(Ok((req, fds))) => match req.ok_or(Reason::BadRequest).and_then(|r| session::admit(r, &fds, &grant)) {
+            Err(reason) => {
+                let _ = session::refuse(conn, reason, &fds);
+                return sys::close(conn);
+            }
+            Ok(adm) if session::inline(&adm, cfg) => {
+                if let Some(pid) = lives.start(ep, conn, caller, &grant, adm, fds, cfg) {
+                    sessions.push((pid, cred.uid));
+                }
+                return;
+            }
+            Ok(adm) => Some((adm, fds)),
+        },
+    };
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         // The client has its verdict and is about to send a request: answer that with an Ack.
         let _ = sys::send_frame_nowait(conn, &Frame::ack(false, Reason::Internal, 0, false).encode());
+        if let Some((_, fds)) = admitted {
+            fds.iter().for_each(|&f| sys::close(f));
+        }
         return sys::close(conn);
     }
     if pid == 0 {
-        session::run(conn, session::Caller { pid: cred.pid, uid: cred.uid }, grant, cfg, daemon_fds);
+        match admitted {
+            Some((adm, fds)) => session::run_admitted(conn, caller, grant, adm, fds, cfg, daemon_fds),
+            None => session::run(conn, caller, grant, cfg, daemon_fds),
+        }
+    }
+    if let Some((_, fds)) = admitted {
+        fds.iter().for_each(|&f| sys::close(f));
     }
     sessions.push((pid, cred.uid));
     sys::close(conn);

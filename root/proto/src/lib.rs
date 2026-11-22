@@ -1,23 +1,26 @@
 // SPDX-FileCopyrightText: The Yasvara Project
 // SPDX-License-Identifier: Apache-2.0
 
-//! Wire formats shared by `su` (client) and `yasvara_rootd` (daemon), SPEC-0006 §5, §13.
+//! Wire formats shared by `su` (client) and `yasvara_rootd` (daemon)
 //!
 //! Everything here is pure data handling (no I/O, no `unsafe`) so it is unit-tested on the
 //! host and fuzzable. All integers are little-endian.
 //!
 //! Conversation on the daemon socket (`SOCKET_PATH` for adb shell; `PROJECTED_SOCKET_PATH` for
-//! enrolled apps, SPEC-0007):
+//! enrolled apps):
 //!
 //! ```text
-//!   daemon → client   Verdict            (16 bytes; sent before anything is read)
 //!   client → daemon   Request            (48-byte header + blobs, fds in SCM_RIGHTS)
+//!   daemon → client   Verdict            (16 bytes; sent before anything is read)
 //!   daemon → client   Ack                (16 bytes, pty master in SCM_RIGHTS if any)
 //!   daemon → client   Exit               (16 bytes)
 //! ```
 //!
-//! The daemon speaks first so that an unenrolled caller is refused without a single request
-//! byte being read (nothing to parse, nothing left unread to trigger ECONNRESET).
+//! The client queues its request without waiting for the verdict. The daemon still decides
+//! before reading a byte: an unenrolled caller's request is dropped unread, and the client reads
+//! the queued verdict before the ECONNRESET that the daemon's close() leaves behind. A request
+//! carries no mount namespace unless a verdict with `VF_WANTS_MNTNS` sent the client back to
+//! ask again with one.
 
 #![forbid(unsafe_code)]
 

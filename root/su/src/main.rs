@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: The Yasvara Project
 // SPDX-License-Identifier: Apache-2.0
 
-//! `su` — client of the ROM's root daemon (SPEC-0006).
+//! `su` — client of the ROM's root daemon.
 //!
-//! It has no privileges of its own: it only asks `yasvara_rootd` over a socket. The daemon
-//! speaks first, so an app that is not enrolled is told so before this process sends a byte.
+//! It has no privileges of its own: it only asks `yasvara_rootd` over a socket. The request is
+//! queued right after connecting, without waiting for the verdict; the daemon reads none of it
+//! from a caller that is not enrolled.
 //!
 //! Command line (what Termux's `tsu` and Magisk-era scripts use):
 //!
@@ -117,9 +118,9 @@ fn parse_args() -> Opts {
 }
 
 fn connect() -> io::Result<RawFd> {
-    // An enrolled app sees the socket at the projected path (SPEC-0007); `adb shell` reaches the
+    // An enrolled app sees the socket at the projected path; `adb shell` reaches the
     // daemon's own path. Anyone else gets an error from both.
-    if let Some(path) = std::env::var_os("YASVARA_SU_SOCKET").filter(|_| cfg!(feature = "host-test")) {
+    if let Some(path) = std::env::var_os("YASVARA_SU_SOCKET") {
         return connect_to(&path);
     }
     match connect_to(OsStr::new(p::PROJECTED_SOCKET_PATH)) {
@@ -235,7 +236,13 @@ fn isatty(fd: RawFd) -> bool {
     unsafe { libc::isatty(fd) == 1 }
 }
 
-fn build_request(o: &Opts, interactive: bool, wants_ns: bool) -> Request {
+/// Apps cannot open their mount namespace (SELinux denies nsfs reads to app domains, and each
+/// try would be an audited denial); shell and root can.
+fn may_open_mntns(uid: u32) -> bool {
+    uid % 100_000 < 10_000
+}
+
+fn build_request(o: &Opts, interactive: bool) -> Request {
     let mut flags = 0u16;
     if interactive {
         flags |= p::RF_INTERACTIVE;
@@ -250,8 +257,6 @@ fn build_request(o: &Opts, interactive: bool, wants_ns: bool) -> Request {
     }
     if o.master {
         flags |= p::RF_MOUNT_MASTER;
-    } else if wants_ns {
-        flags |= p::RF_HAS_MNTNS_FD;
     }
     if o.cmd.is_some() {
         flags |= p::RF_HAS_CMD;
@@ -306,9 +311,10 @@ fn build_request(o: &Opts, interactive: bool, wants_ns: bool) -> Request {
     }
 }
 
-fn main() {
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-    let o = parse_args();
+/// Connects, queues the request and reads the verdict, which the daemon sends before reading
+/// anything. A refused caller's request stays unread; Linux still delivers the verdict ahead of
+/// the reset that the daemon's close() leaves. Returns the send result for the Ack to explain.
+fn ask(req: &[u8], fds: &[RawFd]) -> (RawFd, Frame, io::Result<()>) {
     let conn = match connect() {
         Ok(fd) => fd,
         Err(e) => match e.raw_os_error() {
@@ -317,8 +323,11 @@ fn main() {
             _ => die(&format!("cannot reach the root daemon: {e}")),
         },
     };
-
-    let (verdict, _) = recv_frame(conn).unwrap_or_else(|e| die(&format!("daemon hung up: {e}")));
+    let sent = send_request(conn, req, fds);
+    let (verdict, _) = recv_frame(conn).unwrap_or_else(|e| match &sent {
+        Err(se) => die(&format!("daemon hung up: {se}")),
+        Ok(()) => die(&format!("daemon hung up: {e}")),
+    });
     if verdict.kind != p::KIND_VERDICT {
         die("protocol error");
     }
@@ -328,25 +337,40 @@ fn main() {
     if verdict.a != p::VERSION as u32 {
         die("version mismatch, reboot");
     }
+    (conn, verdict, sent)
+}
 
+fn main() {
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    let o = parse_args();
     let interactive = isatty(0);
-    let req = build_request(&o, interactive, verdict.b & p::VF_WANTS_MNTNS != 0);
+    // Built before connecting: the daemon is woken by the connect and often lands on this CPU.
+    let mut req = build_request(&o, interactive);
     let mut fds: Vec<RawFd> = Vec::new();
-    if req.has(p::RF_HAS_MNTNS_FD) {
+    if req.has(p::RF_HAS_STDIO_FDS) {
+        fds.extend_from_slice(&[0, 1, 2]);
+    }
+    let (mut conn, verdict, mut sent) = ask(&req.encode(), &fds);
+    if verdict.b & p::VF_WANTS_MNTNS != 0 && !o.master {
+        // A confined grant: ask again with the mount namespace. Not opened up front, as nsfs
+        // is unlabeled and every descriptor of it passed to the daemon is an audited denial.
+        if !may_open_mntns(unsafe { libc::getuid() }) {
+            die("this grant confines you to your own mount namespace, which apps cannot open; enroll with the global namespace");
+        }
         let ns = unsafe { libc::open(b"/proc/self/ns/mnt\0".as_ptr() as *const libc::c_char, libc::O_RDONLY | libc::O_CLOEXEC) };
         if ns < 0 {
             die(&format!("this grant confines you to your own mount namespace, which cannot be opened here ({}); enroll with the global namespace", io::Error::last_os_error()));
         }
-        fds.push(ns);
+        unsafe { libc::close(conn) };
+        req.flags |= p::RF_HAS_MNTNS_FD;
+        fds.insert(0, ns);
+        (conn, _, sent) = ask(&req.encode(), &fds);
     }
-    if req.has(p::RF_HAS_STDIO_FDS) {
-        fds.extend_from_slice(&[0, 1, 2]);
-    }
-    if let Err(e) = send_request(conn, &req.encode(), &fds) {
-        die(&format!("daemon hung up: {e}"));
-    }
-
-    let (ack, master) = recv_frame(conn).unwrap_or_else(|e| die(&format!("daemon hung up: {e}")));
+    // A session that refused the request mid-send still left its Ack ahead of the reset.
+    let (ack, master) = match (recv_frame(conn), sent) {
+        (Ok(f), _) => f,
+        (Err(_), Err(e)) | (Err(e), Ok(())) => die(&format!("daemon hung up: {e}")),
+    };
     if ack.kind != p::KIND_ACK || !ack.is_ok() {
         die(Reason::from_u8(ack.reason).message());
     }
@@ -466,4 +490,18 @@ fn copy_out(master: RawFd, buf: &mut [u8]) -> bool {
     }
     let _ = send_all_fd(1, &buf[..n as usize]);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_shell_and_root_try_to_open_the_mount_namespace() {
+        assert!(may_open_mntns(0));
+        assert!(may_open_mntns(2000));
+        assert!(may_open_mntns(10 * 100_000 + 2000), "shell of a secondary user");
+        assert!(!may_open_mntns(10195), "an app");
+        assert!(!may_open_mntns(10 * 100_000 + 10195), "an app of a secondary user");
+    }
 }

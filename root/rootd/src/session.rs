@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: The Yasvara Project
 // SPDX-License-Identifier: Apache-2.0
 
-//! One enrolled connection: a supervisor process that reads the request, forks the shell,
-//! relays its exit status and hangs the shell up when the caller goes away.
-//!
-//! A separate process per session keeps the listener free of per-connection state machines
-//! (and of any parser bug), at the price of one extra fork of a ~1 MiB process.
+//! One enrolled connection. A request that is already queued (the normal case) is run by the main
+//! loop itself (`live.rs`) unless it needs a relay or a shell that is not an exec type; everything
+//! else gets a supervisor process that reads the request, starts the shell, relays its exit
+//! status and hangs the shell up when the caller goes away. Exec-typed shells are spawned by
+//! vfork (`spawn.rs`) on either path; any other shell is forked and switches domain in place.
 
 use std::ffi::CString;
 use std::io;
@@ -19,13 +19,17 @@ use yasvara_root_proto::{
     RF_INTERACTIVE, RF_LOGIN, RF_MOUNT_MASTER, RF_PRESERVE_ENV, TIER_ROOT, TIER_SHELL, UID_SHELL,
 };
 
+use crate::spawn;
 use crate::sys;
 use crate::Config;
 
-const MAX_FDS: usize = 4;
+pub const MAX_FDS: usize = 4;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const HUP_GRACE: Duration = Duration::from_secs(3);
+/// Reading a request that is already queued never waits; this only bounds a misbehaving peer.
+const QUEUED_READ: Duration = Duration::from_millis(100);
+pub const HUP_GRACE: Duration = Duration::from_secs(3);
 const DEFAULT_SHELL: &str = "/system/bin/sh";
+const SHELL_HOME: &str = "/data/local/tmp";
 const DEFAULT_PATH: &str = "/product/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:\
     /system_ext/bin:/system/bin:/system/xbin:/odm/bin:/vendor/bin:/vendor/xbin";
 
@@ -57,13 +61,13 @@ pub fn run(conn: RawFd, caller: Caller, grant: GrantView, cfg: &Config, parent_f
     unsafe { libc::_exit(code) }
 }
 
-fn refuse(conn: RawFd, reason: Reason, fds: &[RawFd]) -> io::Result<()> {
+pub fn refuse(conn: RawFd, reason: Reason, fds: &[RawFd]) -> io::Result<()> {
     fds.iter().for_each(|&f| sys::close(f));
     sys::send_all(conn, &Frame::ack(false, reason, 0, false).encode())
 }
 
-/// The first frame of an allowed connection. The daemon's main loop sends it before it forks the
-/// session, so the client builds its request while the fork happens.
+/// The first frame of an allowed connection, sent by the daemon's main loop before it forks the
+/// session. The client reads it after queueing its request.
 pub fn verdict_frame(grant: &GrantView) -> Frame {
     let wants_ns = if grant.global_ns { 0 } else { p::VF_WANTS_MNTNS };
     Frame::verdict(true, Reason::None, grant.tier, grant.flags | wants_ns)
@@ -71,55 +75,105 @@ pub fn verdict_frame(grant: &GrantView) -> Frame {
 
 fn serve(conn: RawFd, caller: &Caller, grant: &GrantView, cfg: &Config) -> io::Result<()> {
     let deadline = Instant::now() + REQUEST_TIMEOUT;
-
-    // Header first: the fds travel with its first bytes.
-    let mut hdr = [0u8; p::REQUEST_HEADER_LEN];
     if !sys::wait_readable(conn, deadline)? {
         return Err(io::ErrorKind::TimedOut.into());
     }
+    let (req, fds) = read_request(conn, deadline)?;
+    match req.ok_or(Reason::BadRequest).and_then(|r| admit(r, &fds, grant)) {
+        Ok(adm) => serve_admitted(conn, caller, grant, cfg, adm, &fds),
+        Err(reason) => refuse(conn, reason, &fds),
+    }
+}
+
+/// Entry point of a supervisor forked for a request the main loop already read and admitted.
+pub fn run_admitted(
+    conn: RawFd,
+    caller: Caller,
+    grant: GrantView,
+    adm: Admitted,
+    fds: Vec<RawFd>,
+    cfg: &Config,
+    parent_fds: &[RawFd],
+) -> ! {
+    parent_fds.iter().for_each(|&f| sys::close(f));
+    let code = match serve_admitted(conn, &caller, &grant, cfg, adm, &fds) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    };
+    unsafe { libc::_exit(code) }
+}
+
+/// The request and the descriptors that came with it; `None` for one that does not parse
+/// (the descriptors still need closing). Header first: the fds travel with its first bytes.
+pub fn read_request(conn: RawFd, deadline: Instant) -> io::Result<(Option<Request>, Vec<RawFd>)> {
+    let mut hdr = [0u8; p::REQUEST_HEADER_LEN];
     let (n, fds) = sys::recv_with_fds(conn, &mut hdr, MAX_FDS)?;
     if n == 0 {
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
     if n < hdr.len() {
-        sys::read_exact_by(conn, &mut hdr[n..], deadline)?;
+        if let Err(e) = sys::read_exact_by(conn, &mut hdr[n..], deadline) {
+            fds.iter().for_each(|&f| sys::close(f));
+            return Err(e);
+        }
     }
-    let (mut req, lens) = match p::parse_header(&hdr) {
-        Ok(v) => v,
-        Err(_) => return refuse(conn, Reason::BadRequest, &fds),
-    };
-    let mut body = vec![0u8; lens.total()];
-    if sys::read_exact_by(conn, &mut body, deadline).is_err() {
-        return refuse(conn, Reason::BadRequest, &fds);
-    }
-    if p::parse_body(&mut req, &lens, &body).is_err() {
-        return refuse(conn, Reason::BadRequest, &fds);
-    }
+    let req = p::parse_header(&hdr).ok().and_then(|(mut req, lens)| {
+        let mut body = vec![0u8; lens.total()];
+        sys::read_exact_by(conn, &mut body, deadline).ok()?;
+        p::parse_body(&mut req, &lens, &body).ok()?;
+        Some(req)
+    });
+    Ok((req, fds))
+}
 
+/// The whole request if it is already queued, which is the normal case: the client sends it
+/// right after connecting. `None` when it is not all there yet; nothing was consumed then.
+pub fn take_queued(conn: RawFd) -> Option<io::Result<(Option<Request>, Vec<RawFd>)>> {
+    let mut hdr = [0u8; p::REQUEST_HEADER_LEN];
+    let n = unsafe { libc::recv(conn, hdr.as_mut_ptr() as *mut libc::c_void, hdr.len(), libc::MSG_PEEK | libc::MSG_DONTWAIT) };
+    if n < hdr.len() as isize {
+        return None;
+    }
+    let need = hdr.len() + p::parse_header(&hdr).map(|(_, lens)| lens.total()).unwrap_or(0);
+    let mut queued: libc::c_int = 0;
+    if unsafe { libc::ioctl(conn, libc::FIONREAD as _, &mut queued) } < 0 || (queued as usize) < need {
+        return None;
+    }
+    Some(read_request(conn, Instant::now() + QUEUED_READ))
+}
+
+/// A request that passed every check against the grant.
+pub struct Admitted {
+    pub req: Request,
+    pub tier: u8,
+    pub target_uid: u32,
+    /// Stay in the daemon's (global) mount namespace instead of joining the caller's.
+    pub global: bool,
+    pub mntns: Option<RawFd>,
+    pub stdio: Option<[RawFd; 3]>,
+}
+
+pub fn admit(req: Request, fds: &[RawFd], grant: &GrantView) -> Result<Admitted, Reason> {
     // Which fds came, in a fixed order: [mount namespace] [stdin stdout stderr].
     let want = req.has(RF_HAS_MNTNS_FD) as usize + if req.has(RF_HAS_STDIO_FDS) { 3 } else { 0 };
     if fds.len() != want || (req.has(RF_INTERACTIVE) && req.has(RF_HAS_STDIO_FDS)) {
-        return refuse(conn, Reason::BadRequest, &fds);
+        return Err(Reason::BadRequest);
     }
     let mut it = fds.iter().copied();
     let mntns = req.has(RF_HAS_MNTNS_FD).then(|| it.next().unwrap());
     let stdio: Option<[RawFd; 3]> = req.has(RF_HAS_STDIO_FDS).then(|| [it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]);
-    if let Some(s) = stdio {
-        for fd in s {
-            if !stdio_fd_ok(fd) {
-                return refuse(conn, Reason::BadRequest, &fds);
-            }
-        }
+    if stdio.is_some_and(|s| s.iter().any(|&fd| !stdio_fd_ok(fd))) {
+        return Err(Reason::BadRequest);
     }
 
     // What the caller may have.
     let tier = if req.tier == p::TIER_DEFAULT { grant.tier } else { req.tier };
     if tier > grant.tier {
-        return refuse(conn, Reason::Tier, &fds);
+        return Err(Reason::Tier);
     }
     let target_uid = if tier == TIER_SHELL {
         if req.has(RF_HAS_USER) && req.target_uid != UID_SHELL {
-            return refuse(conn, Reason::Tier, &fds);
+            return Err(Reason::Tier);
         }
         UID_SHELL
     } else if req.has(RF_HAS_USER) {
@@ -132,87 +186,32 @@ fn serve(conn: RawFd, caller: &Caller, grant: &GrantView, cfg: &Config) -> io::R
     // A grant can confine the app to its own view instead; `-M` then needs GF_ALLOW_GLOBAL_NS.
     let may_go_global = grant.global_ns || grant.flags & GF_ALLOW_GLOBAL_NS != 0;
     if req.has(RF_MOUNT_MASTER) && !may_go_global {
-        return refuse(conn, Reason::Tier, &fds);
+        return Err(Reason::Tier);
     }
     let global = grant.global_ns || req.has(RF_MOUNT_MASTER);
     // A confined grant must not be escapable by leaving the descriptor out.
     if !global && mntns.is_none() {
-        return refuse(conn, Reason::BadRequest, &fds);
+        return Err(Reason::BadRequest);
     }
+    Ok(Admitted { req, tier, target_uid, global, mntns, stdio })
+}
 
-    let pty = if req.has(RF_INTERACTIVE) {
-        match sys::open_pty() {
-            Ok(pair) => Some(pair),
-            Err(_) => return refuse(conn, Reason::Spawn, &fds),
-        }
-    } else {
-        None
-    };
-    if let Some((m, _)) = pty {
-        sys::set_winsize(m, req.rows, req.cols);
-    }
+/// Whether the shell can be spawned by vfork. Its domain is then set for exec, which needs the
+/// binary to be an entrypoint of `su`/`shell`, and only exec types can be (custom shells, say
+/// Termux's bash, are app data files and keep the fork + setcon path).
+pub fn exec_typed(req: &Request, cfg: &Config) -> bool {
+    let sh = req.shell.as_slice();
+    // Host tests stand /bin/sh in for it, so any other shell takes the fallback there too.
+    !req.has(RF_HAS_SHELL) || sh.is_empty() || sh == DEFAULT_SHELL.as_bytes() || (cfg.unprivileged_test && sh == b"/bin/sh")
+}
 
-    // SHELL tier, plain stdio: relay through daemon-owned pipes (see Relay).
-    let (child_stdio, relay) = match (tier == TIER_SHELL, stdio) {
-        (true, Some(app)) => match make_relay(app) {
-            Ok((child, relay)) => (Some(child), Some(relay)),
-            Err(_) => return refuse(conn, Reason::Spawn, &fds),
-        },
-        _ => (stdio, None),
-    };
+/// Whether the main loop may start this one itself (no supervisor process): an exec-typed shell
+/// that needs no relay, i.e. the ROOT tier, or the SHELL tier on a pty.
+pub fn inline(adm: &Admitted, cfg: &Config) -> bool {
+    exec_typed(&adm.req, cfg) && (adm.tier == TIER_ROOT || adm.stdio.is_none())
+}
 
-    let started = Instant::now();
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        if let Some((m, s)) = pty {
-            sys::close(m);
-            sys::close(s);
-        }
-        return refuse(conn, Reason::Spawn, &fds);
-    }
-    if pid == 0 {
-        // The shell never touches the connection or the pty master.
-        sys::close(conn);
-        if let Some((m, _)) = pty {
-            sys::close(m);
-        }
-        if let Some(r) = &relay {
-            // The shell's side only: the supervisor's ends and the caller's descriptors stay out.
-            sys::close(r.in_w);
-            sys::close(r.out_r);
-            sys::close(r.err_r);
-            r.app.iter().for_each(|&f| sys::close(f));
-        }
-        exec_shell(&Spec { req: &req, tier, target_uid, global, slave: pty.map(|p| p.1), stdio: child_stdio, mntns, cfg });
-    }
-
-    // Supervisor from here on: the shell owns its copies of these. With a relay the caller's
-    // stdio stays open here, and the shell's pipe ends are closed so EOF can reach us.
-    match (&relay, child_stdio) {
-        (Some(_), Some(c)) => c.iter().for_each(|&f| sys::close(f)),
-        _ => {}
-    }
-    fds.iter().filter(|f| relay.as_ref().map_or(true, |r| !r.app.contains(f))).for_each(|&f| sys::close(f));
-    let ack = Frame::ack(true, Reason::None, pid as u32, pty.is_some()).encode();
-    let sent = match pty {
-        Some((m, s)) => {
-            sys::close(s);
-            let r = sys::send_with_fds(conn, &ack, &[m]).map(|_| ());
-            sys::close(m);
-            r
-        }
-        None => sys::send_all(conn, &ack),
-    };
-    if let Err(e) = sent {
-        // The caller is already gone: the shell must not outlive it as an orphan.
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-            libc::kill(pid, libc::SIGKILL);
-        }
-        return Err(e);
-    }
-
-    let what = summary(&req, grant.flags & GF_LOG_FULL != 0);
+pub fn audit_exec(cfg: &Config, caller: &Caller, grant: &GrantView, tier: u8, req: &Request) {
     sys::audit(
         &cfg.data_dir,
         &format!(
@@ -222,11 +221,12 @@ fn serve(conn: RawFd, caller: &Caller, grant: &GrantView, cfg: &Config) -> io::R
             caller.pid,
             if tier == TIER_ROOT { "root" } else { "shell" },
             sys::clean(grant.packages.as_bytes(), 60),
-            what
+            summary(req, grant.flags & GF_LOG_FULL != 0)
         ),
     );
-    let (code, signalled) = supervise(conn, pid, relay);
-    let _ = sys::send_all(conn, &Frame::exit(code, signalled).encode());
+}
+
+pub fn audit_exit(cfg: &Config, caller: &Caller, code: i32, pid: libc::pid_t, started: Instant) {
     sys::audit(
         &cfg.data_dir,
         &format!(
@@ -239,9 +239,114 @@ fn serve(conn: RawFd, caller: &Caller, grant: &GrantView, cfg: &Config) -> io::R
             started.elapsed().as_millis()
         ),
     );
+}
+
+fn serve_admitted(conn: RawFd, caller: &Caller, grant: &GrantView, cfg: &Config, adm: Admitted, fds: &[RawFd]) -> io::Result<()> {
+    let pty = if adm.req.has(RF_INTERACTIVE) {
+        match sys::open_pty() {
+            Ok(pair) => Some(pair),
+            Err(_) => return refuse(conn, Reason::Spawn, fds),
+        }
+    } else {
+        None
+    };
+    if let Some((m, _)) = pty {
+        sys::set_winsize(m, adm.req.rows, adm.req.cols);
+    }
+
+    // SHELL tier, plain stdio: relay through daemon-owned pipes (see Relay).
+    let (child_stdio, relay) = match (adm.tier == TIER_SHELL, adm.stdio) {
+        (true, Some(app)) => match make_relay(app) {
+            Ok((child, relay)) => (Some(child), Some(relay)),
+            Err(_) => return refuse(conn, Reason::Spawn, fds),
+        },
+        _ => (adm.stdio, None),
+    };
+
+    let started = Instant::now();
+    let slave = pty.map(|p| p.1);
+    // Ok(pid), or the exit status of a shell that never got to exec.
+    let spawned: Result<libc::pid_t, i32> = if exec_typed(&adm.req, cfg) {
+        let plan = plan(&adm, slave, child_stdio, cfg);
+        spawn::spawn(&plan).map_err(|f| {
+            report(&f, &plan, slave.or(adm.stdio.map(|s| s[2])));
+            f.code()
+        })
+    } else {
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            if let Some((m, s)) = pty {
+                sys::close(m);
+                sys::close(s);
+            }
+            return refuse(conn, Reason::Spawn, fds);
+        }
+        if pid == 0 {
+            // The shell never touches the connection or the pty master.
+            sys::close(conn);
+            if let Some((m, _)) = pty {
+                sys::close(m);
+            }
+            if let Some(r) = &relay {
+                // The shell's side only: the supervisor's ends and the caller's descriptors stay out.
+                sys::close(r.in_w);
+                sys::close(r.out_r);
+                sys::close(r.err_r);
+                r.app.iter().for_each(|&f| sys::close(f));
+            }
+            let Admitted { req, tier, target_uid, global, mntns, .. } = &adm;
+            exec_shell(&Spec { req, tier: *tier, target_uid: *target_uid, global: *global, slave, stdio: child_stdio, mntns: *mntns, cfg });
+        }
+        Ok(pid)
+    };
+
+    // Supervisor from here on: the shell owns its copies of these. With a relay the caller's
+    // stdio stays open here, and the shell's pipe ends are closed so EOF can reach us.
+    if let (Some(_), Some(c)) = (&relay, child_stdio) {
+        c.iter().for_each(|&f| sys::close(f));
+    }
+    fds.iter().filter(|f| relay.as_ref().map_or(true, |r| !r.app.contains(f))).for_each(|&f| sys::close(f));
+    let ack = Frame::ack(true, Reason::None, spawned.unwrap_or(0) as u32, pty.is_some()).encode();
+    let sent = match pty {
+        Some((m, s)) => {
+            sys::close(s);
+            let r = sys::send_with_fds(conn, &ack, &[m]).map(|_| ());
+            sys::close(m);
+            r
+        }
+        None => sys::send_all(conn, &ack),
+    };
+    audit_exec(cfg, caller, grant, adm.tier, &adm.req);
+    let pid = match spawned {
+        Ok(pid) => pid,
+        Err(code) => {
+            let _ = sys::send_all(conn, &Frame::exit(code, false).encode());
+            audit_exit(cfg, caller, code, 0, started);
+            return Ok(());
+        }
+    };
+    if let Err(e) = sent {
+        // The caller is already gone: the shell must not outlive it as an orphan.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+            libc::kill(pid, libc::SIGKILL);
+        }
+        return Err(e);
+    }
+
+    let (code, signalled) = supervise(conn, pid, relay);
+    let _ = sys::send_all(conn, &Frame::exit(code, signalled).encode());
+    audit_exit(cfg, caller, code, pid, started);
     Ok(())
 }
 
+/// Writes what a shell that failed before exec would have printed to `to` (its stderr).
+pub fn report(f: &spawn::Failure, plan: &spawn::Plan, to: Option<RawFd>) {
+    let msg = f.message(plan);
+    if let Some(fd) = to {
+        unsafe { libc::write(fd, msg.as_ptr() as *const libc::c_void, msg.len()) };
+    }
+}
 
 /// The SHELL tier runs in the enforcing `shell` domain, which has no business with pipes and
 /// files that apps own. Its stdio is therefore a set of pipes the daemon itself creates (labelled
@@ -415,6 +520,11 @@ fn reap(pid: libc::pid_t) -> Option<(i32, bool)> {
     if r < 0 {
         return Some((1, false));
     }
+    exit_code(status)
+}
+
+/// The exit code (128 + signal when killed) and whether it was a signal.
+pub fn exit_code(status: libc::c_int) -> Option<(i32, bool)> {
     if libc::WIFEXITED(status) {
         Some((libc::WEXITSTATUS(status), false))
     } else if libc::WIFSIGNALED(status) {
@@ -422,6 +532,72 @@ fn reap(pid: libc::pid_t) -> Option<(i32, bool)> {
     } else {
         None
     }
+}
+
+/// Everything a vfork-spawned shell needs, prepared before it is cloned: what [`exec_shell`]
+/// does, with the domain set for exec instead of switched in place.
+pub fn plan(adm: &Admitted, slave: Option<RawFd>, stdio: Option<[RawFd; 3]>, cfg: &Config) -> spawn::Plan {
+    let req = &adm.req;
+    let privileged = !cfg.unprivileged_test;
+    let shell = if req.has(RF_HAS_SHELL) && !req.shell.is_empty() { req.shell.clone() } else { DEFAULT_SHELL.as_bytes().to_vec() };
+    let base = shell.rsplit(|&c| c == b'/').next().unwrap_or(&shell).to_vec();
+    let mut argv0 = Vec::new();
+    if req.has(RF_LOGIN) {
+        argv0.push(b'-');
+    }
+    argv0.extend_from_slice(&base);
+    let mut argv = vec![cstr(argv0)];
+    if req.has(RF_HAS_CMD) {
+        argv.push(cstr(b"-c".to_vec()));
+        argv.push(cstr(req.cmd.clone()));
+        argv.extend(req.args.iter().cloned().map(cstr));
+    }
+    let cgroups = if privileged {
+        p::scheduling_cgroups(&req.cgroup)
+            .into_iter()
+            .map(|(dir, path)| cstr(format!("{dir}{}/cgroup.procs", if path == "/" { "" } else { path.as_str() }).into_bytes()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let uid = adm.target_uid;
+    let shell_tier = adm.tier == TIER_SHELL;
+    let ids = privileged.then(|| {
+        let (gid, groups) = identity(adm.tier, uid);
+        spawn::Ids { groups, gid, uid }
+    });
+    // The SHELL tier could not enter an app directory anyway: it starts in the shell's home.
+    let cwd = if shell_tier && privileged {
+        Some(CString::new(SHELL_HOME).unwrap())
+    } else {
+        CString::new(req.cwd.clone()).ok().filter(|c| !c.as_bytes().is_empty())
+    };
+    spawn::Plan {
+        path: cstr(shell),
+        argv,
+        envp: build_env(req, uid, adm.tier).into_iter().map(cstr).collect(),
+        ctty: slave,
+        stdio,
+        cgroups,
+        mntns: if privileged && !adm.global { adm.mntns } else { None },
+        umask: (req.umask & 0o777) as libc::mode_t,
+        ids,
+        cwd,
+        exec_con: privileged.then(|| CString::new(context(adm.tier)).unwrap()),
+    }
+}
+
+/// The primary and supplementary groups of the shell.
+fn identity(tier: u8, uid: u32) -> (libc::gid_t, Vec<libc::gid_t>) {
+    match (tier, uid) {
+        (TIER_SHELL, _) => (UID_SHELL, SHELL_GROUPS.to_vec()),
+        (_, 0) => (0, SHELL_GROUPS.to_vec()),
+        _ => (uid, vec![uid]),
+    }
+}
+
+fn context(tier: u8) -> &'static str {
+    if tier == TIER_SHELL { "u:r:shell:s0" } else { "u:r:su:s0" }
 }
 
 struct Spec<'a> {
@@ -509,14 +685,8 @@ fn exec_shell(s: &Spec) -> ! {
 
     if !s.cfg.unprivileged_test {
         let uid = s.target_uid;
-        let (gid, groups): (libc::gid_t, Vec<libc::gid_t>) = if s.tier == TIER_SHELL {
-            (UID_SHELL, SHELL_GROUPS.to_vec())
-        } else if uid == 0 {
-            (0, SHELL_GROUPS.to_vec())
-        } else {
-            (uid, vec![uid])
-        };
-        let ctx = if s.tier == TIER_SHELL { "u:r:shell:s0" } else { "u:r:su:s0" };
+        let (gid, groups) = identity(s.tier, uid);
+        let ctx = context(s.tier);
         unsafe {
             if libc::setgroups(groups.len() as _, groups.as_ptr()) != 0 {
                 fail("setgroups", Some(io::Error::last_os_error()));
@@ -539,7 +709,7 @@ fn exec_shell(s: &Spec) -> ! {
     // ROOT tier: the caller's directory, entered as root in the `su` domain (app directories are
     // 0700, so this precedes dropping to another uid). SHELL tier: the shell domain and uid 2000
     // could not enter an app directory anyway, so it starts in the shell's own home.
-    let home = std::ffi::CStr::from_bytes_with_nul(b"/data/local/tmp\0").unwrap();
+    let home = CString::new(SHELL_HOME).unwrap();
     let cwd = CString::new(req.cwd.clone()).ok().filter(|c| !c.as_bytes().is_empty());
     unsafe {
         if s.tier == TIER_SHELL && !s.cfg.unprivileged_test {
@@ -596,7 +766,7 @@ fn cstr(mut v: Vec<u8>) -> CString {
     CString::new(v).unwrap()
 }
 
-/// The environment of the shell (SPEC-0006 §9):
+/// The environment of the shell:
 /// * `-p` keeps the caller's environment untouched;
 /// * otherwise the caller's environment, minus every `LD_*`, with the stock system `PATH`
 ///   and `HOME`/`SHELL`/`USER`/`LOGNAME` set (a Termux `PATH` would hide `/system/bin`);
@@ -636,7 +806,7 @@ fn build_env(req: &Request, uid: u32, tier: u8) -> Vec<Vec<u8>> {
         env.push((k.as_bytes().to_vec(), v.to_vec()));
     };
     set("PATH", DEFAULT_PATH.as_bytes());
-    set("HOME", b"/data/local/tmp");
+    set("HOME", SHELL_HOME.as_bytes());
     set("SHELL", if req.has(RF_HAS_SHELL) { &req.shell } else { DEFAULT_SHELL.as_bytes() });
     set("USER", user.as_bytes());
     set("LOGNAME", user.as_bytes());
@@ -691,6 +861,55 @@ mod tests {
         assert_eq!(get(&env, "USER").as_deref(), Some("shell"));
         let env = build_env(&req(0, &[]), 10195, TIER_ROOT);
         assert_eq!(get(&env, "USER").as_deref(), Some("10195"));
+    }
+
+    fn cfg(unprivileged_test: bool) -> Config {
+        Config {
+            data_dir: "/d".into(),
+            grants_path: "/d/g".into(),
+            events_path: "/d/e".into(),
+            enrolled_path: "/d/s".into(),
+            socket_path: None,
+            unprivileged_test,
+        }
+    }
+
+    fn admitted(tier: u8, shell: Option<&str>, stdio: bool) -> Admitted {
+        let mut r = req(if shell.is_some() { RF_HAS_SHELL } else { 0 }, &[]);
+        r.shell = shell.unwrap_or("").as_bytes().to_vec();
+        r.cwd = b"/data/data/com.termux/files/home".to_vec();
+        let target_uid = if tier == TIER_SHELL { UID_SHELL } else { 0 };
+        Admitted { req: r, tier, target_uid, global: true, mntns: None, stdio: stdio.then_some([0, 1, 2]) }
+    }
+
+    #[test]
+    fn main_loop_runs_exec_typed_shells_that_need_no_relay() {
+        let c = cfg(false);
+        assert!(inline(&admitted(TIER_ROOT, None, true), &c));
+        assert!(inline(&admitted(TIER_ROOT, Some("/system/bin/sh"), true), &c));
+        assert!(inline(&admitted(TIER_SHELL, None, false), &c), "SHELL tier on a pty needs no relay");
+        assert!(!inline(&admitted(TIER_SHELL, None, true), &c), "plain stdio is relayed");
+        let bash = "/data/data/com.termux/files/usr/bin/bash";
+        assert!(!exec_typed(&admitted(TIER_ROOT, Some(bash), true).req, &c), "no entrypoint for app files");
+        assert!(!inline(&admitted(TIER_ROOT, Some(bash), true), &c));
+        assert!(!inline(&admitted(TIER_SHELL, Some(bash), false), &c));
+    }
+
+    #[test]
+    fn shell_tier_plan_is_the_adb_shell_identity() {
+        let p = plan(&admitted(TIER_SHELL, None, false), Some(7), None, &cfg(false));
+        let ids = p.ids.unwrap();
+        assert_eq!((ids.uid, ids.gid), (UID_SHELL, UID_SHELL));
+        assert_eq!(ids.groups, SHELL_GROUPS.to_vec());
+        assert_eq!(p.exec_con.unwrap().to_str().unwrap(), "u:r:shell:s0");
+        assert_eq!(p.cwd.unwrap().to_str().unwrap(), SHELL_HOME, "never the app's directory");
+        assert_eq!(p.ctty, Some(7));
+
+        let p = plan(&admitted(TIER_ROOT, None, true), None, Some([3, 4, 5]), &cfg(false));
+        assert_eq!(p.exec_con.unwrap().to_str().unwrap(), "u:r:su:s0");
+        assert_eq!(p.cwd.unwrap().to_str().unwrap(), "/data/data/com.termux/files/home");
+        assert_eq!(p.stdio, Some([3, 4, 5]));
+        assert_eq!(p.path.to_str().unwrap(), DEFAULT_SHELL);
     }
 
     #[test]

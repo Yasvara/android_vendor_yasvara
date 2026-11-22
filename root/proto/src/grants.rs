@@ -2,17 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! `grants.v1`: the policy file YasvaraRootService writes and `yasvara_rootd` trusts
-//! (SPEC-0006 §13).
+//!
 //!
 //! ```text
-//! # yasvara-root grants v1 frozen=0 version=7
+//! # yasvara-root grants v1 enabled=1 frozen=0 version=7
 //! uid tier ns flags expires_wall_ms boot_id|- signer pkg[,pkg…]
 //! 10195 root req 0 0 - 3f8a91c2d4e5b607 com.termux,com.termux.api
 //! ```
 //!
 //! `tier` is `shell` or `root` (the highest tier the app may ask for), `ns` is `req`
 //! (caller's mount namespace) or `global`, `flags` is hex. A line that does not parse is
-//! skipped; a file without the header is treated as no grants at all.
+//! skipped; a file without the header is treated as no grants at all. `enabled=0` is the
+//! master switch: everyone is refused and nobody is projected. Without the key the daemon is
+//! on, as it only runs while the switch is.
 
 use crate::{TIER_ROOT, TIER_SHELL};
 
@@ -43,6 +45,7 @@ pub struct Grant {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Grants {
+    pub off: bool,
     pub frozen: bool,
     pub version: u64,
     pub grants: Vec<Grant>,
@@ -51,6 +54,7 @@ pub struct Grants {
 /// Why a lookup did not yield a usable grant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
+    Off,
     NotEnrolled,
     Frozen,
     Expired,
@@ -64,6 +68,7 @@ impl Grants {
         let mut out = Grants::default();
         for kv in rest.split_whitespace() {
             match kv.split_once('=') {
+                Some(("enabled", v)) => out.off = v == "0",
                 Some(("frozen", v)) => out.frozen = v == "1",
                 Some(("version", v)) => out.version = v.parse().unwrap_or(0),
                 _ => {}
@@ -86,6 +91,9 @@ impl Grants {
 
     /// Applies freeze, expiry and `until reboot`. Lazy by design: nothing runs on a timer.
     pub fn lookup(&self, uid: u32, now_wall_ms: u64, boot_id: &str) -> Result<&Grant, Refusal> {
+        if self.off {
+            return Err(Refusal::Off);
+        }
         let g = self.find(uid).ok_or(Refusal::NotEnrolled)?;
         if self.frozen {
             return Err(Refusal::Frozen);
@@ -124,12 +132,12 @@ fn parse_line(line: &str) -> Option<Grant> {
     Some(Grant { uid, tier, global_ns, flags, expires_ms, boot_id, signer, packages })
 }
 
-/// SPEC-0007: the set zygote reads at app start to decide whether to project the client into
+/// the set zygote reads at app start to decide whether to project the client into
 /// an app's mount namespace: sorted, de-duplicated little-endian `u32` uids, nothing else. A
 /// frozen policy projects nothing. Expiry is not applied here (zygote has no clock policy);
 /// the daemon refuses an expired grant on its own, so over-inclusion only costs a mount.
 pub fn enrolled_set(g: &Grants) -> Vec<u8> {
-    if g.frozen {
+    if g.off || g.frozen {
         return Vec::new();
     }
     let mut uids: Vec<u32> = g.grants.iter().map(|e| e.uid).collect();
@@ -140,7 +148,7 @@ pub fn enrolled_set(g: &Grants) -> Vec<u8> {
 
 /// The serialisation YasvaraRootService mirrors in Java; used by tests and tooling.
 pub fn format(g: &Grants) -> String {
-    let mut s = format!("{HEADER_PREFIX} frozen={} version={}\n", g.frozen as u8, g.version);
+    let mut s = format!("{HEADER_PREFIX} enabled={} frozen={} version={}\n", !g.off as u8, g.frozen as u8, g.version);
     for e in &g.grants {
         s.push_str(&format!(
             "{} {} {} {:x} {} {} {} {}\n",
@@ -179,6 +187,9 @@ mod tests {
         assert_eq!(enrolled_set(&g), want, "duplicates collapse");
         g.frozen = true;
         assert!(enrolled_set(&g).is_empty());
+        g.frozen = false;
+        g.off = true;
+        assert!(enrolled_set(&g).is_empty(), "nobody is projected while off");
     }
 
     #[test]
@@ -214,6 +225,19 @@ mod tests {
         assert_eq!(frozen.lookup(10195, 0, "b").unwrap_err(), Refusal::Frozen);
         // An unknown uid is NotEnrolled even when frozen: nothing to reveal.
         assert_eq!(frozen.lookup(7, 0, "b").unwrap_err(), Refusal::NotEnrolled);
+    }
+
+    #[test]
+    fn master_switch() {
+        let on = SAMPLE.replacen("v1 ", "v1 enabled=1 ", 1);
+        let off = SAMPLE.replacen("v1 ", "v1 enabled=0 ", 1);
+        assert!(!Grants::parse(SAMPLE).off, "no key: on");
+        assert!(!Grants::parse(&on).off);
+        let g = Grants::parse(&off);
+        assert!(g.off);
+        assert_eq!(g.lookup(10195, 0, "b").unwrap_err(), Refusal::Off);
+        assert_eq!(g.lookup(7, 0, "b").unwrap_err(), Refusal::Off);
+        assert_eq!(Grants::parse(&format(&g)), g);
     }
 
     #[test]
