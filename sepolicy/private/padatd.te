@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# Padat lazy native F2FS per-app realtime compression daemon (`padatd`).
+
+init_daemon_domain(padatd)
+
+# Target app files carry per-app MLS categories (`:s0:c...`).
+typeattribute padatd mlstrustedsubject;
+
+# Persistent policy directory `/data/system/padat`.
+type padat_data_file, file_type, data_file_type, core_data_file_type;
+
+# Lazy AIDL service (`yasvara.padat`), called only by `system_server` (and root CLI/shell).
+binder_use(padatd)
+binder_service(padatd)
+add_service(padatd, yasvara_padat_service)
+binder_call(system_server, padatd)
+binder_call(padatd, system_server)
+allow system_server yasvara_padat_service:service_manager find;
+
+# Root file preservation capabilities for atomic temp-copy & metadata restoration.
+allow padatd self:global_capability_class_set {
+    chown
+    dac_override
+    dac_read_search
+    fowner
+    fsetid
+    sys_nice
+};
+allow padatd self:process { getsched setsched };
+
+# Policy file storage under `/data/system/padat`.
+allow padatd system_data_root_file:dir r_dir_perms;
+allow padatd system_data_file:dir { getattr search };
+allow padatd padat_data_file:dir create_dir_perms;
+allow padatd padat_data_file:file create_file_perms;
+
+# Package discovery & running-process guard.
+allow padatd packages_list_file:file r_file_perms;
+allow padatd proc:dir r_dir_perms;
+allow padatd appdomain:dir r_dir_perms;
+allow padatd appdomain:file r_file_perms;
+dontaudit padatd { domain -appdomain }:dir { getattr search };
+dontaudit padatd vold:fd use;
+
+# Traverse `/data/media/0` to `Android/{data,obb}`.
+allow padatd media_userdir_file:dir r_dir_perms;
+
+# Atomic compression/decompression, metadata/SELinux label preservation, and F2FS ioctls
+# across APK/lib, install stageDir, ART oat/vdex, Android/data, OBB, and optional internal app files.
+allow padatd {
+    apk_data_file
+    apk_tmp_file
+    dalvikcache_data_file
+    media_rw_data_file
+    app_data_file
+    privapp_data_file
+}:dir { create_dir_perms relabelfrom relabelto ioctl };
+
+allow padatd {
+    apk_data_file
+    apk_tmp_file
+    dalvikcache_data_file
+    media_rw_data_file
+    app_data_file
+    privapp_data_file
+}:file { create_file_perms relabelfrom relabelto ioctl };
+
+allow padatd {
+    apk_data_file
+    apk_tmp_file
+    dalvikcache_data_file
+    media_rw_data_file
+    app_data_file
+    privapp_data_file
+}:lnk_file getattr;
+
+# Whitelist exact F2FS compression ioctls (including M2 V2 get=0xf51c / set=0xf51d).
+allowxperm padatd {
+    apk_data_file
+    apk_tmp_file
+    dalvikcache_data_file
+    media_rw_data_file
+    app_data_file
+    privapp_data_file
+}:{ dir file } ioctl {
+    FS_IOC_GETFLAGS
+    FS_IOC_SETFLAGS
+    F2FS_IOC_GET_COMPRESS_BLOCKS
+    F2FS_IOC_RELEASE_COMPRESS_BLOCKS
+    F2FS_IOC_RESERVE_COMPRESS_BLOCKS
+    F2FS_IOC_GET_COMPRESS_OPTION
+    F2FS_IOC_SET_COMPRESS_OPTION
+    F2FS_IOC_COMPRESS_FILE
+    F2FS_IOC_DECOMPRESS_FILE
+    0xf51c
+    0xf51d
+};
+
+# Kernel F2FS sysfs counters (`/dev/sys/fs/by-name/userdata` -> `/sys/fs/f2fs/*`) and battery thermal.
+allow padatd device:dir search;
+allow padatd userdata_sysdev:lnk_file r_file_perms;
+allow padatd sysfs_fs_f2fs:dir r_dir_perms;
+allow padatd sysfs_fs_f2fs:file r_file_perms;
+allow padatd sysfs_thermal:dir r_dir_perms;
+allow padatd sysfs_thermal:file r_file_perms;
+allow padatd sysfs_thermal:lnk_file r_file_perms;
+allow padatd sysfs_devices_system_cpu:dir r_dir_perms;
+allow padatd sysfs_devices_system_cpu:file r_file_perms;
+allow padatd sysfs:dir r_dir_perms;

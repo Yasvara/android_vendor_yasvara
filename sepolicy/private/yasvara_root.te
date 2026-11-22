@@ -1,4 +1,4 @@
-# SPEC-0006 native root ("Akar"): yasvara_rootd, its socket, data and service.
+# native root ("Akar"): yasvara_rootd, its socket, data and service.
 #
 # The root shell itself runs in AOSP's own `su` domain (permissive, userdebug/eng only) and
 # the SHELL tier in `shell`; this file only adds the daemon that gets a caller there.
@@ -8,7 +8,7 @@
 type yasvara_rootd_exec, system_file_type, exec_type, file_type;
 init_daemon_domain(yasvara_rootd)
 
-# The socket apps connect to: /data/misc/yasvara_root/run/ctl.sock, bound by the daemon (SPEC-0007;
+# The socket apps connect to: /data/misc/yasvara_root/run/ctl.sock, bound by the daemon (
 # no longer a /dev/socket entry). An enrolled app reaches it through a bind mount that Zygote
 # puts in the app's own mount namespace. mlstrustedobject: callers carry per-app MLS categories
 # (c512,c768 …) which the daemon's domain would otherwise not dominate.
@@ -31,16 +31,17 @@ allow shell su_exec:lnk_file read;
 # events.sock (system_server binds).
 type yasvara_root_data_file, file_type, data_file_type, core_data_file_type;
 
-# persist.yasvara.root.*: only system_server (and init) touch it.
-system_internal_prop(yasvara_root_prop)
+# The daemon's init.svc.yasvara_sessiond is mapped (property_contexts, kept free of comments:
+# apps read that file) to the stock init_svc_debug_prop, which no app can read; the generic
+# init.svc. context is readable by every app.
 
-# The control plane, "yasvara_root". Every call needs yasvara.permission.MANAGE_ROOT.
+# The control plane, "yasvara_session". Every call needs yasvara.permission.MANAGE_ROOT.
 type yasvara_root_service, system_server_service, service_manager_type;
 
 # Rollout: permissive on debuggable builds, like AOSP's `su`. The daemon already decides who
 # gets a permissive root shell, so this widens nothing, and it lets the denials of the
 # fds apps pass in (pipes, ptys, files of many labels) be collected before the explicit
-# rules are tightened and this line is dropped (SPEC-0006 M3).
+# rules are tightened and this line is dropped.
 userdebug_or_eng(`permissive yasvara_rootd;')
 
 # ---- what the daemon does --------------------------------------------------------------------
@@ -52,10 +53,18 @@ allow yasvara_rootd self:process { fork sigchld signal getsched setsched setcurr
 # system.
 allow yasvara_rootd self:capability { setuid setgid sys_admin sys_chroot kill sys_nice sys_resource };
 
-# The root shell is the existing `su`; the SHELL tier is `shell`. dyntransition after fork,
-# so no `entrypoint` permission is needed on every binary a root shell may run.
-userdebug_or_eng(`allow yasvara_rootd su:process dyntransition;')
-userdebug_or_eng(`allow yasvara_rootd shell:process dyntransition;')
+# The root shell is the existing `su`; the SHELL tier is `shell`. A shell spawned by vfork
+# shares the daemon's memory, where switching domain in place is refused, so its domain is set
+# for exec: that needs `entrypoint` on the binary, i.e. an exec type (/system/bin/sh). Any
+# other shell (Termux's bash, an app data file) is forked and switched in place instead.
+userdebug_or_eng(`
+  allow yasvara_rootd { su shell }:process { dyntransition transition noatsecure rlimitinh siginh signal sigkill };
+  allow yasvara_rootd self:process setexec;
+  allow yasvara_rootd shell_exec:file rx_file_perms;
+  allow su shell_exec:file entrypoint;
+  allow { su shell } yasvara_rootd:process sigchld;
+  allow su yasvara_rootd:fd use;
+')
 
 allow yasvara_rootd yasvara_root_data_file:dir create_dir_perms;
 allow yasvara_rootd yasvara_root_data_file:file create_file_perms;
@@ -108,13 +117,12 @@ userdebug_or_eng(`
   allow shell yasvara_rootd:fifo_file { read write getattr ioctl };
 ')
 
-# system_server: the policy file, the event socket, the property, the self test.
+# system_server: the policy file, the event socket, the self test. It starts and stops the
+# daemon with ctl.start/ctl.stop (ctl_default_prop, stock).
 allow system_server yasvara_root_data_file:dir create_dir_perms;
 allow system_server yasvara_root_data_file:file create_file_perms;
 allow system_server yasvara_root_data_file:sock_file create_file_perms;
 allow system_server self:unix_dgram_socket create_socket_perms_no_ioctl;
-set_prop(system_server, yasvara_root_prop)
-get_prop(system_server, yasvara_root_prop)
 allow system_server yasvara_su_socket:sock_file write;
 allow system_server yasvara_rootd:unix_stream_socket connectto;
 allow system_server yasvara_su_run_file:dir search;
@@ -124,7 +132,7 @@ allow system_server yasvara_su_socket:sock_file getattr;
 # Laras (platform_app / platform_app_36) manages it; Settings may show the state.
 allow { platform_app_all priv_app_all system_app } yasvara_root_service:service_manager find;
 
-# ---- Tabir projection (SPEC-0007) ---------------------------------------------------------
+# ---- Tabir projection ---------------------------------------------------------
 # Zygote, before it drops privileges in an *enrolled* app's own mount namespace: read the set,
 # take handles on the client and the socket, mount a tmpfs over /system/xbin and bind both in.
 # The tmpfs root is labelled yasvara_tabir_file (rootcontext=), which its children inherit, so

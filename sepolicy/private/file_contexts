@@ -1,4 +1,4 @@
-# SPEC-0006 native root.
+# native root.
 /system/xbin/yasvara_rootd         u:object_r:yasvara_rootd_exec:s0
 /system/xbin/yasvara_su             u:object_r:yasvara_su_client_exec:s0
 /data/misc/yasvara_root(/.*)?     u:object_r:yasvara_root_data_file:s0
@@ -8,3 +8,27 @@
 # The shell-convenience link /system/xbin/su -> yasvara_su keeps AOSP's su_exec label: checkfc
 # rejects a second spec for that path. Exec follows the link, so the transition is decided by
 # the client's own label (no auto-transition into `su`); the link only needs to be readable.
+
+# Attestation credential and target list: system_server writes, keystore2 reads.
+/data/misc/yasvara_attest(/.*)?   u:object_r:yasvara_attest_data_file:s0
+
+# Policy sources outside /system get system_file upstream, which every app can read, and they
+# spell out this partition's rules (root daemon, its dyntransition to su). Same type as
+# plat_sepolicy.cil: init loads them before any label applies; adbd and shell may read them.
+/(system_ext|system/system_ext)/etc/selinux/system_ext_sepolicy\.cil                 u:object_r:sepolicy_file:s0
+/(system_ext|system/system_ext)/etc/selinux/system_ext_sepolicy_and_mapping\.sha256  u:object_r:sepolicy_file:s0
+/(product|system/product)/etc/selinux/product_sepolicy\.cil                          u:object_r:sepolicy_file:s0
+/(product|system/product)/etc/selinux/product_sepolicy_and_mapping\.sha256           u:object_r:sepolicy_file:s0
+# Only init reads it; for apps it would spell out the root daemon.
+/system/etc/init/yasvara_sessiond\.rc                                                u:object_r:sepolicy_file:s0
+
+# Hentak catalog scan.
+/(system_ext|system/system_ext)/bin/hentak_scan   u:object_r:hentak_scan_exec:s0
+/data/misc/hentak(/.*)?                           u:object_r:hentak_data_file:s0
+
+# Pantau lazy native telemetry & HUD daemon.
+/(system_ext|system/system_ext)/bin/pantaud       u:object_r:pantaud_exec:s0
+
+# Padat lazy native F2FS realtime compression daemon & policy store.
+/(system_ext|system/system_ext)/bin/padatd        u:object_r:padatd_exec:s0
+/data/system/padat(/.*)?                          u:object_r:padat_data_file:s0

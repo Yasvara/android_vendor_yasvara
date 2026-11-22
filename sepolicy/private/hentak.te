@@ -1,0 +1,26 @@
+# Hentak catalog scan (frameworks/av/services/hentak/rust, hentak_scan): reads one game's own
+# sound files under /data/media/<user>/Android/{data,obb}/<package> and writes its catalog to
+# /data/misc/hentak, which audioserver loads. init starts it when system_server names the game.
+
+type hentak_scan, domain, coredomain;
+type hentak_scan_exec, system_file_type, exec_type, file_type;
+init_daemon_domain(hentak_scan)
+
+type hentak_data_file, file_type, data_file_type, core_data_file_type;
+system_internal_prop(hentak_scan_prop)
+
+# The game's files carry its MLS categories.
+typeattribute hentak_scan mlstrustedsubject;
+allow hentak_scan media_rw_data_file:dir r_dir_perms;
+allow hentak_scan media_rw_data_file:file r_file_perms;
+allow hentak_scan hentak_data_file:dir rw_dir_perms;
+allow hentak_scan hentak_data_file:file create_file_perms;
+allow hentak_scan system_data_file:dir search;
+get_prop(hentak_scan, hentak_scan_prop)
+
+set_prop(system_server, hentak_scan_prop)
+allow system_server hentak_data_file:dir { search getattr open read watch };
+allow system_server hentak_data_file:file getattr;
+
+allow audioserver hentak_data_file:dir search;
+allow audioserver hentak_data_file:file r_file_perms;

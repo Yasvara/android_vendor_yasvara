@@ -1,6 +1,6 @@
-# SPEC-0006 native root: the master switch init watches to start/stop yasvara_rootd.
-persist.yasvara.root.             u:object_r:yasvara_root_prop:s0
-# SPEC-0007: init publishes init.svc.<service> for every service, and coredomain (so every app)
-# may read the generic ones. This one names the daemon; only system_server (installed-state of
-# Akar) and init can touch it.
-init.svc.yasvara_rootd            u:object_r:yasvara_root_prop:s0 exact string
+# Public, immutable per-boot measurement published by system_server after KeyMint is ready.
+ro.yasvara.boot.digest           u:object_r:system_prop:s0 exact string
+ro.yasvara.boot.source           u:object_r:system_prop:s0 exact string
+
+init.svc.yasvara_sessiond         u:object_r:init_svc_debug_prop:s0 exact string
+sys.yasvara.hentak.scan          u:object_r:hentak_scan_prop:s0 exact string

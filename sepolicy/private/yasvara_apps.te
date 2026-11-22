@@ -2,9 +2,20 @@
 # update policy. Use the _all attributes: targetSdk-36 apps get the _36 domains.
 allow { platform_app_all priv_app_all system_app } yasvara_update_policy_service:service_manager find;
 
-# Layang (SPEC-0008): SystemUI and Launcher3 (platform_app*), Laras (platform_app*),
+# Layang: SystemUI and Launcher3 (platform_app*), Laras (platform_app*),
 # GameSpace (system_app, persistent system uid).
 allow { platform_app_all priv_app_all system_app } yasvara_layang_service:service_manager find;
 
-# Swara (SPEC-0010): SystemUI's Volume Panel and Laras (platform_app*).
+# Swara: SystemUI's Volume Panel and Laras (platform_app*).
 allow { platform_app_all priv_app_all system_app } yasvara_swara_service:service_manager find;
+
+# Ketik: Laras (platform_app*).
+allow { platform_app_all priv_app_all system_app } yasvara_ketik_service:service_manager find;
+
+# Padat: Laras (platform_app*) and Settings (system_app).
+allow { platform_app_all priv_app_all system_app } yasvara_padat_mgr_service:service_manager find;
+
+# Hentak: audioserver posts game haptic events to system_server, and streams the envelope to the
+# vibrator HAL's "hentak" instance.
+allow audioserver yasvara_hentak_service:service_manager find;
+hal_client_domain(audioserver, hal_vibrator)

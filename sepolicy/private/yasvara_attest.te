@@ -1,0 +1,12 @@
+# Keybox and target list shared by system_server (writer) and keystore2 (reader).
+# Kept outside keystore_data_file: that tree's neverallows exclude system_server on purpose.
+type yasvara_attest_data_file, file_type, data_file_type, core_data_file_type;
+
+allow system_server yasvara_attest_data_file:dir rw_dir_perms;
+allow system_server yasvara_attest_data_file:file create_file_perms;
+
+allow keystore yasvara_attest_data_file:dir r_dir_perms;
+allow keystore yasvara_attest_data_file:file r_file_perms;
+
+neverallow keystore yasvara_attest_data_file:dir ~r_dir_perms;
+neverallow keystore yasvara_attest_data_file:file ~r_file_perms;

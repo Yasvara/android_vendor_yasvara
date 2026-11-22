@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pantau lazy native telemetry & HUD daemon (public type so device vendor policy
+# can grant read-only access to vendor-labelled GPU/fuel-gauge sysfs nodes).
+
+type pantaud, domain, coredomain;
+type pantaud_exec, system_file_type, exec_type, file_type;

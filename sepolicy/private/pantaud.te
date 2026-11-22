@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pantau lazy native telemetry & HUD daemon (`pantaud`).
+
+init_daemon_domain(pantaud)
+
+# Sealed shared-memory Snapshot memfd (`pantaud_tmpfs` via `memfd_create`).
+type pantaud_tmpfs, file_type;
+tmpfs_domain(pantaud)
+typeattribute pantaud_tmpfs mlstrustedobject;
+allow pantaud pantaud_tmpfs:file open;
+
+binder_use(pantaud)
+binder_service(pantaud)
+add_service(pantaud, yasvara_pantau_service)
+
+# system_server (PentasService + `cmd pantau`) lazily wakes and talks to pantaud.
+binder_call(system_server, pantaud)
+binder_call(pantaud, system_server)
+allow system_server yasvara_pantau_service:service_manager find;
+allow system_server pantaud:fd use;
+allow system_server pantaud:memfd_file { getattr read map };
+allow system_server pantaud_tmpfs:file { getattr read map };
+
+# Pentas (`system_app`) maps pantaud's sealed read-only Snapshot memfd and controls consumers.
+binder_call(system_app, pantaud)
+allow system_app yasvara_pantau_service:service_manager find;
+allow system_app pantaud:fd use;
+allow system_app pantaud:memfd_file { getattr read map };
+allow system_app pantaud_tmpfs:file { getattr read map };
+
+# Native HUD overlay (2x GraphicBuffer ping-pong + SurfaceComposerClient::Transaction)
+# and direct SurfaceFlinger IFpsListener callbacks (M2).
+hal_client_domain(pantaud, hal_graphics_allocator)
+binder_call(pantaud, surfaceflinger)
+binder_call(surfaceflinger, pantaud)
+allow pantaud surfaceflinger_service:service_manager find;
+allow pantaud dmabuf_system_heap_device:chr_file r_file_perms;
+allow pantaud hal_graphics_allocator:fd use;
+allow pantaud hal_graphics_composer:fd use;
+
+# Read-only proc/sys/cgroup telemetry nodes (persistent pread fds).
+allow pantaud proc_stat:file r_file_perms;
+allow pantaud proc_meminfo:file r_file_perms;
+allow pantaud proc_vmstat:file r_file_perms;
+allow pantaud proc_net:file r_file_perms;
+allow pantaud proc_pressure_cpu:file r_file_perms;
+allow pantaud proc_pressure_mem:file r_file_perms;
+allow pantaud proc_pressure_io:file r_file_perms;
+
+# Passive kernel TCP_INFO RTT / jitter / retransmit via netlink sock_diag (0 ping forks).
+allow pantaud self:netlink_tcpdiag_socket create_socket_perms_no_ioctl;
+allow pantaud self:netlink_tcpdiag_socket nlmsg_read;
+allow pantaud self:netlink_tcpdiag_socket nlmsg;
+allowxperm pantaud self:netlink_tcpdiag_socket nlmsg SOCK_DIAG_BY_FAMILY;
+
+allow pantaud sysfs_devices_system_cpu:dir r_dir_perms;
+allow pantaud sysfs_devices_system_cpu:file r_file_perms;
+allow pantaud sysfs_thermal:dir r_dir_perms;
+allow pantaud sysfs_thermal:file r_file_perms;
+allow pantaud sysfs_thermal:lnk_file r_file_perms;
+allow pantaud sysfs_zram:dir r_dir_perms;
+allow pantaud sysfs_zram:file r_file_perms;
+allow pantaud sysfs:dir r_dir_perms;
+
+# Adaptive cgroup v2 per-UID CPU & memory accounting.
+allow pantaud cgroup_v2:dir r_dir_perms;
+allow pantaud cgroup_v2:file r_file_perms;
+
+# Self scheduling / niceness / affinity pinning on efficiency cluster.
+allow pantaud self:process { getsched setsched };
+allow pantaud self:capability sys_nice;
