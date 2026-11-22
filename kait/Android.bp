@@ -1,0 +1,84 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Kait — ROM-native, rootless hooking framework (Rust core + ROM-ART seam).
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// Binder contracts between a scoped process, system_server, and Laras.
+java_library {
+    name: "yasvara-kait-ipc",
+    srcs: ["runtime/ipc/**/*.aidl"],
+    aidl: {
+        local_include_dirs: ["runtime/ipc"],
+    },
+    platform_apis: true,
+    installable: false,
+    visibility: ["//visibility:public"],
+}
+
+// Compile-time stubs: xposed.dummy.* is generated in memory on the device by libkait_dex,
+// and libxposed annotations are CLASS-retained metadata.
+java_library {
+    name: "yasvara-kait-stubs",
+    srcs: ["runtime/stubs/**/*.java"],
+    platform_apis: true,
+    installable: false,
+}
+
+// The Java/Kotlin runtime half of Kait (libxposed API 101/102 + legacy Xposed bridge).
+// Loaded via DexClassLoader from /system_ext/framework/yasvara-kait.jar by libyasvara_kait.so,
+// and ONLY inside processes system_server flagged with Zygote.YASVARA_KAIT.
+java_library {
+    name: "yasvara-kait",
+    srcs: [
+        "runtime/java/**/*.java",
+        "runtime/kotlin/**/*.kt",
+        "runtime/loader/**/*.kt",
+    ],
+    static_libs: [
+        "yasvara-kait-ipc",
+        "kotlin-stdlib",
+    ],
+    libs: [
+        "yasvara-kait-stubs",
+        "androidx.annotation_annotation",
+    ],
+    platform_apis: true,
+    system_ext_specific: true,
+    installable: true,
+    sdk_version: "",
+    kotlincflags: ["-Xjvm-default=all"],
+    dex_preopt: {
+        enabled: true,
+    },
+}
+
+// Host JVM unit tests covering KaitNativeHooker zero-alloc CoW dispatch, KaitChain
+// PROTECTIVE/PASSTHROUGH semantics, HookSnapshot atomicity, and KaitHookBuilder guards.
+java_test_host {
+    name: "kait_runtime_host_test",
+    srcs: [
+        "runtime/java/io/github/libxposed/api/XposedInterface.java",
+        "runtime/java/io/github/libxposed/api/error/**/*.java",
+        "runtime/stubs/io/github/libxposed/annotation/**/*.java",
+        "runtime/kotlin/org/yasvara/kait/impl/di/KaitBootstrap.kt",
+        "runtime/kotlin/org/yasvara/kait/impl/hooks/HookSnapshot.kt",
+        "runtime/kotlin/org/yasvara/kait/impl/hooks/KaitChain.kt",
+        "runtime/kotlin/org/yasvara/kait/impl/hooks/KaitHookHandle.kt",
+        "runtime/kotlin/org/yasvara/kait/impl/hooks/KaitNativeHooker.kt",
+        "tests/host/src/**/*.kt",
+        "tests/host/stubs/**/*.java",
+    ],
+    static_libs: [
+        "junit",
+        "kotlin-stdlib",
+    ],
+    libs: [
+        "androidx.annotation_annotation",
+    ],
+    kotlincflags: ["-Xjvm-default=all"],
+    test_suites: ["general-tests"],
+}

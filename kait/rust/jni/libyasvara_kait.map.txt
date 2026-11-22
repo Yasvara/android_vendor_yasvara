@@ -1,0 +1,6 @@
+LIBYASVARA_KAIT {
+  global:
+    yasvara_kait_attach;
+  local:
+    *;
+};
