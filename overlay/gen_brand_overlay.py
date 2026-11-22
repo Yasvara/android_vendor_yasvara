@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
-"""Writes the Yasvara brand overlay of the Lineage apps' strings (SPEC-0004 §4.7).
+"""Writes the Yasvara brand overlay of the Lineage apps' strings.
 
 For each listed string it takes every translation the app ships, puts Yasvara where the text
 names LineageOS, and writes the result under no-rro/, a build-time overlay: the APKs are built

@@ -35,7 +35,7 @@ import androidx.graphics.shapes.toPath as toAndroidPath
 
 /**
  * The Material 3 Expressive shapes Yasvara surfaces put icons in, and cached morphs between
- * them. Each group of the Settings home owns one shape (SPEC-0004 §4.2); a press morphs it to
+ * them. Each group of the Settings home owns one shape; a press morphs it to
  * a circle.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -119,7 +119,7 @@ class PolygonShape(polygon: RoundedPolygon) : Shape {
 
 /**
  * 0 at rest and 1 while [interactionSource] is pressed or [held], moved with the theme's fast
- * spatial spring (SPEC-0004 §4.2 press). Reduced motion snaps.
+ * spatial spring (press). Reduced motion snaps.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable

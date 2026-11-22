@@ -5,7 +5,7 @@
 -->
 <resources>
     <!-- Laras previews the home screen and reads the icon shapes through the launcher's
-         customization provider (SPEC-0003 §4.4). Laras is signed with the platform key and the
+         customization provider. Laras is signed with the platform key and the
          launcher with the default one, so the platform certificate (SHA-256) is a known signer
          of GRID_CONTROL. Update it together with the release keys. -->
     <string-array name="grid_control_known_signers" translatable="false">

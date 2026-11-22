@@ -45,7 +45,7 @@ import org.yasvara.brand.YasvaraMarkGeometry.JUNCTION_X
 import org.yasvara.brand.YasvaraMarkGeometry.JUNCTION_Y
 import org.yasvara.brand.YasvaraMarkGeometry.STROKE
 
-/** What the Yasvara mark shows (SPEC-0004 §4.1). */
+/** What the Yasvara mark shows. */
 enum class MarkState {
     /** Draws itself from the junction outward, like the boot animation. Played once. */
     Draw,

@@ -32,7 +32,7 @@ import kotlinx.coroutines.launch
 /**
  * The boot animation's voice ripple: a ring leaves a point, widens and fades out. Each [emit]
  * sends one ring, and once the last one has faded nothing is drawn, so a surface at rest draws
- * no frames (SPEC-0004 §4.1).
+ * no frames.
  */
 @Stable
 class VoiceRippleState internal constructor(private val scope: CoroutineScope) {

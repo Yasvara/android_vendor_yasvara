@@ -22,5 +22,5 @@ PRODUCT_PRODUCT_PROPERTIES += \
     persist.sys.yasvara.photos_spoof=1 \
     persist.sys.yasvara.snap_spoof=1
 
-# Yasvara brand strings and icons for the Lineage apps (SPEC-0004 §4.7).
+# Yasvara brand strings and icons for the Lineage apps.
 $(call inherit-product, vendor/yasvara/overlay/overlay.mk)
