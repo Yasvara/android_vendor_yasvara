@@ -1,6 +1,6 @@
-# SystemUI's ThemeOverlayController hosts the Yasvara colour engine (SPEC-0002 §11 Q1). The
+# SystemUI's ThemeOverlayController hosts the Yasvara colour engine (Q1). The
 # server-side ThemeManagerService would turn it into a no-op, so keep it off and read-only until
-# the engine is ported to system_server (SPEC-0002 M5).
+# the engine is ported to system_server.
 flag_value {
   package: "android.server"
   name: "enable_theme_service"

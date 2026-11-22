@@ -1,0 +1,4 @@
+name: "RELEASE_BUILD_AFDO_ENABLE_MFS"
+value: {
+  bool_value: true
+}
