@@ -1,0 +1,20 @@
+# Host builds and `cargo test` only; the platform builds this crate with Soong (Android.bp).
+[package]
+name = "pantau"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+pantau_tap = { path = "../tap" }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "pantau_bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "pantau_layout_gen"
+path = "src/bin/layout_gen.rs"

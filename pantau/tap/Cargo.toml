@@ -1,0 +1,14 @@
+# Host builds and `cargo test` only; the platform builds this crate with Soong (Android.bp).
+[package]
+name = "pantau_tap"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+# Enabled only on the standalone no_std staticlib linked into C++ framework processes
+# (SurfaceFlinger, InputFlinger, libhwui, framefx).
+standalone = []
+
+[lib]
+path = "src/lib.rs"

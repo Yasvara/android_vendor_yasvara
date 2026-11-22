@@ -1,0 +1,185 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+
+// Pantau & Jejak — 2-crate Rust core (`pantau_tap` no_std + `pantau` std-only)
+// and lazy native `pantaud` daemon.
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_defaults {
+    name: "pantau_opt_defaults",
+    edition: "2021",
+    flags: [
+        "-C", "opt-level=3",
+        "-C", "codegen-units=1",
+    ],
+    lints: "vendor",
+    clippy_lints: "vendor",
+}
+
+// ── Crate 1: pantau_tap (#![no_std], < 4 KB) ────────────────────────────────
+
+// Linked directly into C++ framework processes (SurfaceFlinger, InputFlinger, libhwui, framefx)
+// without pulling in Rust's `libstd`.
+rust_ffi_static {
+    name: "libpantau_tap",
+    defaults: ["pantau_opt_defaults"],
+    crate_name: "pantau_tap",
+    srcs: ["tap/src/lib.rs"],
+    features: ["standalone"],
+    no_stdlibs: true,
+    stdlibs: [
+        "libcompiler_builtins.rust_sysroot",
+        "libcore.rust_sysroot",
+    ],
+    export_include_dirs: ["tap/include"],
+    apex_available: ["//apex_available:platform"],
+}
+
+// `rlib` form depended on by `libpantau` (no duplicate panic handler).
+rust_library {
+    name: "libpantau_tap_rlib",
+    defaults: ["pantau_opt_defaults"],
+    crate_name: "pantau_tap",
+    srcs: ["tap/src/lib.rs"],
+    host_supported: true,
+}
+
+rust_test_host {
+    name: "pantau_tap_test",
+    crate_name: "pantau_tap",
+    srcs: ["tap/src/lib.rs"],
+    edition: "2021",
+    test_suites: ["general-tests"],
+}
+
+// ── Crate 2: pantau (std-only, zero external crates) ────────────────────────
+
+rust_defaults {
+    name: "pantau_core_defaults",
+    defaults: ["pantau_opt_defaults"],
+    crate_name: "pantau",
+    srcs: ["core/src/lib.rs"],
+    rustlibs: ["libpantau_tap_rlib"],
+}
+
+rust_library {
+    name: "libpantau",
+    defaults: ["pantau_core_defaults"],
+    host_supported: true,
+}
+
+rust_ffi_static {
+    name: "libpantau_ffi",
+    defaults: ["pantau_core_defaults"],
+}
+
+rust_test_host {
+    name: "pantau_test",
+    crate_name: "pantau",
+    srcs: ["core/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libpantau_tap_rlib"],
+    test_suites: ["general-tests"],
+}
+
+// Speed & 0-allocation verification gate; runs on host and on `onyx` (`--live`).
+rust_binary {
+    name: "pantau_bench",
+    defaults: ["pantau_opt_defaults"],
+    crate_name: "pantau_bench",
+    srcs: ["core/src/bin/bench.rs"],
+    prefer_rlib: true,
+    rustlibs: [
+        "libpantau",
+        "libpantau_tap_rlib",
+    ],
+    host_supported: true,
+}
+
+// Generates `pantau_abi.h` and `PantauLayout.kt` from `pantau::abi::LAYOUT_FIELDS`.
+rust_binary_host {
+    name: "pantau_layout_gen",
+    crate_name: "pantau_layout_gen",
+    srcs: ["core/src/bin/layout_gen.rs"],
+    edition: "2021",
+    rustlibs: ["libpantau"],
+}
+
+// Compile-time & link-time verification that `libpantau_tap` (`no_stdlibs: true`) links cleanly
+// into a pure C++ aarch64 binary with zero `libstd` dependency and locked C++ struct sizes.
+cc_binary {
+    name: "pantau_tap_abi_check",
+    srcs: ["tap/tests/abi_check.cpp"],
+    static_libs: ["libpantau_tap"],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O3",
+    ],
+}
+
+// Host build tool: bakes Google Sans Flex into `/system_ext/etc/pantau/atlas.bin` (magic "PNA1").
+cc_binary_host {
+    name: "pantau_atlas_bake",
+    srcs: ["tools/atlas_bake.cpp"],
+    static_libs: ["libft2.nodep"],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O2",
+    ],
+}
+
+genrule {
+    name: "pantau_atlas_gen",
+    tools: ["pantau_atlas_bake"],
+    srcs: [":google_sans_flex_regular_ttf"],
+    out: ["atlas.bin"],
+    cmd: "$(location pantau_atlas_bake) $(in) $(out)",
+}
+
+prebuilt_etc {
+    name: "pantau_atlas",
+    system_ext_specific: true,
+    relative_install_path: "pantau",
+    filename: "atlas.bin",
+    src: ":pantau_atlas_gen",
+}
+
+// ── Thin C++ lazy AIDL daemon (`pantaud`) ───────────────────────────────────
+
+cc_binary {
+    name: "pantaud",
+    system_ext_specific: true,
+    srcs: [
+        "daemon/main.cpp",
+        "daemon/hud.cpp",
+        "daemon/sf_fps.cpp",
+    ],
+    local_include_dirs: ["daemon/include"],
+    init_rc: ["daemon/pantaud.rc"],
+    required: ["pantau_atlas"],
+    static_libs: [
+        "libpantau_ffi",
+        "yasvara.pantau-cpp",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "libgui",
+        "liblog",
+        "libui",
+        "libutils",
+    ],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O3",
+    ],
+}

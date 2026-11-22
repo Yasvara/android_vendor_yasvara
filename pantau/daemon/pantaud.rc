@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+
+# Lazy native telemetry & HUD service. Started on demand by servicemanager
+# when PentasService or `cmd pantau` requests `yasvara.pantau`; exits automatically when Off.
+service pantaud /system_ext/bin/pantaud
+    interface aidl yasvara.pantau
+    class main
+    user system
+    group system readproc
+    disabled
+    oneshot
