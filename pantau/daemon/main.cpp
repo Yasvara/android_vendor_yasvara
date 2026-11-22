@@ -222,6 +222,11 @@ public:
         applyLocked(pantau_engine_tick(mEngine));
     }
 
+    bool allowExit() {
+        std::lock_guard<std::mutex> lock(mMu);
+        return mAllowExit;
+    }
+
 private:
     void applyLocked(const PantauLifeActions& a) {
         if (a.timer_ms != mTimerMs) {
@@ -230,6 +235,7 @@ private:
             setTimerMs(mTimerFd, mTimerMs, waking);
         }
         mHudVisible = a.hud_visible;
+        mAllowExit = a.allow_exit;
         mFps.sync(a.focused_task_id, (a.active_consumers & kMaskFps) != 0);
         mHud.sync(mEngine, mHudVisible);
         LazyServiceRegistrar::getInstance().forcePersist(!a.allow_exit);
@@ -240,6 +246,7 @@ private:
     int mTimerFd;
     uint32_t mTimerMs = 0;
     bool mHudVisible = false;
+    bool mAllowExit = true;
     pantau::HudSurfaces mHud;
     pantau::SfFpsTracker mFps;
 };
@@ -296,12 +303,22 @@ int main() {
 
     LOG(INFO) << "pantaud ready (M2 native NEON HUD + SF FPS + single-thread epoll)";
 
+    constexpr int kIdleExitTimeoutMs = 15000;
     epoll_event events[8];
     for (;;) {
-        int n = epoll_wait(epfd, events, 8, -1);
+        const int timeoutMs = service->allowExit() ? kIdleExitTimeoutMs : -1;
+        int n = epoll_wait(epfd, events, 8, timeoutMs);
         if (n < 0) {
             if (errno == EINTR) continue;
             break;
+        }
+        if (n == 0) {
+            if (service->allowExit()) {
+                (void)registrar.tryUnregister();
+                LOG(INFO) << "pantaud idle exit (0 KB idle)";
+                break;
+            }
+            continue;
         }
         for (int i = 0; i < n; ++i) {
             if (events[i].data.u64 == kTokenBinder) {

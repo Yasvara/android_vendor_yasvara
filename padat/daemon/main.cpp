@@ -4,11 +4,14 @@
  */
 #define LOG_TAG "padatd"
 
+#include <malloc.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
+#include <thread>
 
 #include <android-base/logging.h>
 #include <binder/IPCThreadState.h>
@@ -28,6 +31,13 @@ using android::sp;
 using android::binder::LazyServiceRegistrar;
 using android::binder::Status;
 
+constexpr int64_t kIdleExitSeconds = 20;
+
+int64_t monoNowSec() {
+    using namespace std::chrono;
+    return duration_cast<seconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 std::string takeRustString(char* ptr) {
     if (!ptr) {
         return "{}";
@@ -43,25 +53,39 @@ bool callerAuthorized() {
 }
 
 struct PersistGuard {
-    explicit PersistGuard(std::atomic<int>& active) : mActive(active) {
+    PersistGuard(std::atomic<int>& active, std::atomic<int64_t>& lastActivity)
+          : mActive(active), mLastActivity(lastActivity) {
+        mLastActivity.store(monoNowSec(), std::memory_order_relaxed);
         if (mActive.fetch_add(1) == 0) {
             LazyServiceRegistrar::getInstance().forcePersist(true);
         }
     }
     ~PersistGuard() {
+        mLastActivity.store(monoNowSec(), std::memory_order_relaxed);
         if (mActive.fetch_sub(1) == 1) {
+            // Return Scudo 1 MB I/O buffers & scan arenas back to the kernel immediately.
+            mallopt(M_PURGE, 0);
             LazyServiceRegistrar::getInstance().forcePersist(false);
         }
     }
     std::atomic<int>& mActive;
+    std::atomic<int64_t>& mLastActivity;
 };
 
 class PadatBinderService final : public yasvara::padat::BnPadat {
 public:
+    PadatBinderService() : mLastActivitySec(monoNowSec()) {}
+
+    bool isIdleForExit() const {
+        if (mActiveJobs.load(std::memory_order_acquire) > 0) return false;
+        return (monoNowSec() - mLastActivitySec.load(std::memory_order_relaxed)) >= kIdleExitSeconds;
+    }
+
     Status statusJson(std::string* out) override {
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
+        touch();
         *out = takeRustString(padat_status_json());
         return Status::ok();
     }
@@ -70,6 +94,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
+        touch();
         *out = takeRustString(padat_get_policy_json());
         return Status::ok();
     }
@@ -78,6 +103,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
+        touch();
         *out = padat_set_policy_json(json.c_str());
         return Status::ok();
     }
@@ -87,7 +113,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
-        PersistGuard guard(mActiveJobs);
+        PersistGuard guard(mActiveJobs, mLastActivitySec);
         *out = takeRustString(padat_scan_package_json(
                 pkg.c_str(), static_cast<uint8_t>(algo & 0xff), static_cast<uint8_t>(level & 0xff),
                 static_cast<uint16_t>(clusterKb > 0 ? clusterKb : 16),
@@ -101,7 +127,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
-        PersistGuard guard(mActiveJobs);
+        PersistGuard guard(mActiveJobs, mLastActivitySec);
         *out = takeRustString(padat_compress_package_json(
                 pkg.c_str(), static_cast<uint8_t>(algo & 0xff), static_cast<uint8_t>(level & 0xff),
                 static_cast<uint16_t>(clusterKb > 0 ? clusterKb : 16),
@@ -114,7 +140,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
-        PersistGuard guard(mActiveJobs);
+        PersistGuard guard(mActiveJobs, mLastActivitySec);
         *out = takeRustString(padat_sync_package_json(
                 pkg.c_str(), static_cast<uint8_t>(algo & 0xff), static_cast<uint8_t>(level & 0xff),
                 static_cast<uint16_t>(clusterKb > 0 ? clusterKb : 16),
@@ -127,7 +153,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
-        PersistGuard guard(mActiveJobs);
+        PersistGuard guard(mActiveJobs, mLastActivitySec);
         *out = takeRustString(padat_decompress_package_json(
                 pkg.c_str(), static_cast<uint32_t>(scopeMask), allowRunning));
         return Status::ok();
@@ -137,7 +163,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
-        PersistGuard guard(mActiveJobs);
+        PersistGuard guard(mActiveJobs, mLastActivitySec);
         *out = takeRustString(padat_release_path_json(path.c_str()));
         return Status::ok();
     }
@@ -146,7 +172,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
-        PersistGuard guard(mActiveJobs);
+        PersistGuard guard(mActiveJobs, mLastActivitySec);
         *out = takeRustString(padat_all_stats_json());
         return Status::ok();
     }
@@ -155,7 +181,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
-        PersistGuard guard(mActiveJobs);
+        PersistGuard guard(mActiveJobs, mLastActivitySec);
         *out = static_cast<int64_t>(padat_cleanup_stale_temps());
         return Status::ok();
     }
@@ -165,6 +191,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
+        touch();
         *out = padat_apply_dir_profile(
                 path.c_str(), static_cast<uint8_t>(algo & 0xff), static_cast<uint8_t>(level & 0xff),
                 static_cast<uint16_t>(clusterKb > 0 ? clusterKb : 16));
@@ -175,6 +202,7 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
+        touch();
         padat_set_paused(paused);
         return Status::ok();
     }
@@ -183,12 +211,16 @@ public:
         if (!callerAuthorized()) {
             return Status::fromExceptionCode(Status::EX_SECURITY, "padatd: unauthorized caller");
         }
+        touch();
         padat_cancel_job();
         return Status::ok();
     }
 
 private:
+    void touch() { mLastActivitySec.store(monoNowSec(), std::memory_order_relaxed); }
+
     std::atomic<int> mActiveJobs{0};
+    std::atomic<int64_t> mLastActivitySec{0};
 };
 
 } // namespace
@@ -208,6 +240,20 @@ int main() {
         LOG(ERROR) << "registerService(yasvara.padat) failed";
         return 1;
     }
+
+    // Idle reaper: drop to 0 KB when no job or RPC has arrived for kIdleExitSeconds,
+    // even if a Java client (system_server) has an un-GC'd BinderProxy reference.
+    std::thread([service]() {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            if (service->isIdleForExit()) {
+                mallopt(M_PURGE, 0);
+                (void)LazyServiceRegistrar::getInstance().tryUnregister();
+                LOG(INFO) << "padatd idle exit (0 KB idle)";
+                _exit(0);
+            }
+        }
+    }).detach();
 
     LOG(INFO) << "padatd ready (lazy Rust F2FS realtime compression daemon)";
     IPCThreadState::self()->joinThreadPool();
