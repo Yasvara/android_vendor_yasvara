@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+
+# Ensure persistent policy directory exists with `padat_data_file` label.
+on post-fs-data
+    mkdir /data/system/padat 0770 root system
+
+# Lazy native F2FS realtime compression daemon. Started on demand by
+# servicemanager when PadatService or `cmd padat` requests `yasvara.padat`; exits when idle.
+service padatd /system_ext/bin/padatd
+    interface aidl yasvara.padat
+    class main
+    user root
+    group root system media_rw ext_data_rw ext_obb_rw readproc
+    disabled
+    oneshot

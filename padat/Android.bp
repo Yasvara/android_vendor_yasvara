@@ -1,0 +1,82 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+
+// Padat — Per-app realtime F2FS /data compression (std-only Rust core,
+// CLI binary `padat`, and lazy native Binder daemon `padatd`).
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_defaults {
+    name: "padat_opt_defaults",
+    edition: "2021",
+    flags: [
+        "-C", "opt-level=3",
+        "-C", "codegen-units=1",
+    ],
+    lints: "vendor",
+    clippy_lints: "vendor",
+}
+
+rust_defaults {
+    name: "padat_core_defaults",
+    defaults: ["padat_opt_defaults"],
+    crate_name: "padat",
+    srcs: ["core/src/lib.rs"],
+}
+
+rust_library {
+    name: "libpadat",
+    defaults: ["padat_core_defaults"],
+    host_supported: true,
+}
+
+rust_ffi_static {
+    name: "libpadat_ffi",
+    defaults: ["padat_core_defaults"],
+}
+
+rust_test_host {
+    name: "padat_test",
+    crate_name: "padat",
+    srcs: ["core/src/lib.rs"],
+    edition: "2021",
+    test_suites: ["general-tests"],
+}
+
+// Standalone diagnostic & operator CLI (`/system_ext/bin/padat`).
+rust_binary {
+    name: "padat",
+    defaults: ["padat_opt_defaults"],
+    system_ext_specific: true,
+    crate_name: "padat_cli",
+    srcs: ["core/src/bin/padat_cli.rs"],
+    prefer_rlib: true,
+    rustlibs: ["libpadat"],
+}
+
+// Thin C++ lazy AIDL daemon (`/system_ext/bin/padatd`).
+cc_binary {
+    name: "padatd",
+    system_ext_specific: true,
+    srcs: ["daemon/main.cpp"],
+    local_include_dirs: ["daemon/include"],
+    init_rc: ["daemon/padatd.rc"],
+    static_libs: [
+        "libpadat_ffi",
+        "yasvara.padat-cpp",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "liblog",
+        "libutils",
+    ],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O3",
+    ],
+}
