@@ -109,6 +109,10 @@ allow { untrusted_app_all shell } yasvara_su_run_file:dir search;
 # shell reaches run/ through the data directory (0771); apps never see this directory
 allow shell yasvara_root_data_file:dir search;
 allow { untrusted_app_all shell } yasvara_su_client_exec:file { rx_file_perms execute_no_trans };
+# Interactive su stays in the caller's domain and receives the pty master by SCM_RIGHTS.
+# That fd is owned by yasvara_rootd. Without fd use the kernel drops it (MSG_CTRUNC) and the
+# last close of the master SIGHUPs the shell. adb shell already has this allow below.
+allow untrusted_app_all yasvara_rootd:fd use;
 
 # The SHELL tier runs in the enforcing `shell` domain, whose stdio is a set of pipes the daemon
 # creates and relays (session.rs `Relay`); only those, never anything an app owns.
@@ -147,7 +151,9 @@ allow zygote yasvara_tabir_file:file { create_file_perms mounton };
 # (mounton on the system_file /system/xbin comes from zygote.te's userdebug_or_eng rule; the
 # platform neverallow forbids it on `user`, which has no Akar.)
 # The app walks /system/xbin like any directory; only the two entries in it lead anywhere.
-allow { untrusted_app_all shell } yasvara_tabir_file:dir { search getattr };
+# search is path lookup. read+open is readdir, which Termux login does on /system/xbin.
+# .s stays unlistable: it is yasvara_su_run_file, and apps have only search there.
+allow { untrusted_app_all shell } yasvara_tabir_file:dir { search getattr open read };
 allow { untrusted_app_all shell } yasvara_tabir_file:file getattr;
 
 allow zygote yasvara_root_data_file:dir search;
