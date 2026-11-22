@@ -1,0 +1,17 @@
+type yasvara_adbd_ctl, domain, coredomain;
+type yasvara_adbd_ctl_exec, exec_type, file_type, system_file_type;
+
+init_daemon_domain(yasvara_adbd_ctl)
+
+binder_use(yasvara_adbd_ctl)
+binder_service(yasvara_adbd_ctl)
+add_service(yasvara_adbd_ctl, yasvara_adbd_ctl_service)
+
+allow yasvara_adbd_ctl package_native_service:service_manager find;
+binder_call(yasvara_adbd_ctl, system_server)
+
+allow yasvara_adbd_ctl yasvara_adbd_ctl_data_file:dir rw_dir_perms;
+allow yasvara_adbd_ctl yasvara_adbd_ctl_data_file:file create_file_perms;
+
+set_prop(yasvara_adbd_ctl, shell_prop)
+set_prop(yasvara_adbd_ctl, ctl_adbd_prop)

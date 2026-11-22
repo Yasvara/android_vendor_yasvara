@@ -1,0 +1,16 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+prebuilt_etc_xml {
+    name: "yasvara-component-overrides.xml",
+    product_specific: true,
+    src: "etc/yasvara-component-overrides.xml",
+    sub_dir: "sysconfig",
+}
+
+prebuilt_addon_d {
+    name: "50-yasvara.sh",
+    src: "bin/50-yasvara.sh",
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-FileCopyrightText: The Yasvara Project
+     SPDX-License-Identifier: Apache-2.0
+-->
+<config>
+    <!-- Broadcast actions exempted from O+ background delivery restrictions. -->
+    <allow-implicit-broadcast action="android.intent.action.CAMERA_BUTTON" />
+</config>

@@ -1,0 +1,2 @@
+# External storage: fsck operates on block fds passed by vold; never grant CAP_SYS_ADMIN.
+

@@ -1,0 +1,27 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+genrule {
+    name: "gen-yasvara-bootanimation.zip",
+    tool_files: ["yasvara_bootanimation.zip"],
+    out: ["bootanimation.zip"],
+    cmd: select(soong_config_variable("yasvara_bootanimation", "prebuilt_file"), {
+        any @ prebuilt_file: "cp ../../../../../" + prebuilt_file + " $(out)",
+        default: "cp $(location yasvara_bootanimation.zip) $(out)",
+    }),
+}
+
+prebuilt_media {
+    name: "bootanimation.zip",
+    src: ":gen-yasvara-bootanimation.zip",
+    product_specific: true,
+}
+
+install_symlink {
+    name: "bootanimation-dark.zip",
+    product_specific: true,
+    installed_location: "media/bootanimation-dark.zip",
+    symlink_target: "bootanimation.zip",
+}

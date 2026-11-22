@@ -1,0 +1,2 @@
+allow adbd yasvara_adbd_ctl:binder call;
+allow adbd yasvara_adbd_ctl_service:service_manager find;

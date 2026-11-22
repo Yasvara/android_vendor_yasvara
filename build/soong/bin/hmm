@@ -1,0 +1,14 @@
+function __print_yasvara_functions_help() {
+cat <<EOF
+Additional Yasvara functions:
+- brunch:          Runs "breakfast" and "mka bacon" for the provided device target.
+- breakfast:       Wrapper for "lunch".
+- cout:            Changes directory to out.
+- mka:             Alias to "m".
+- mmp/mmap/mmmp:   Builds modules and pushes them to the device.
+- aospremote:      Add git remote for matching AOSP repository.
+- cloremote:       Add git remote for matching CodeLinaro repository.
+- installboot:     Installs a boot.img to the connected device.
+- installrecovery: Installs a recovery.img to the connected device.
+EOF
+}

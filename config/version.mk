@@ -1,0 +1,43 @@
+#
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+#
+
+YASVARA_VERSION_MAJOR := 1
+YASVARA_VERSION_MINOR := 0
+YASVARA_ANDROID_VERSION := 17
+
+ifeq ($(YASVARA_VERSION_APPEND_TIME_OF_DAY),true)
+    YASVARA_BUILD_DATE := $(shell date -u +%Y%m%d_%H%M%S)
+else
+    YASVARA_BUILD_DATE := $(shell date -u +%Y%m%d)
+endif
+
+ifndef YASVARA_BUILDTYPE
+    ifdef LINEAGE_BUILDTYPE
+        YASVARA_BUILDTYPE := $(LINEAGE_BUILDTYPE)
+    else ifdef RELEASE_TYPE
+        YASVARA_BUILDTYPE := $(shell echo $(RELEASE_TYPE) | sed -e 's|^YASVARA_||g' -e 's|^LINEAGE_||g')
+    endif
+endif
+
+ifeq ($(filter OFFICIAL RELEASE NIGHTLY SNAPSHOT EXPERIMENTAL,$(YASVARA_BUILDTYPE)),)
+    YASVARA_BUILDTYPE := UNOFFICIAL
+endif
+
+ifeq ($(WITH_GMS),true)
+    YASVARA_VARIANT := GMS
+else
+    YASVARA_VARIANT := VANILLA
+endif
+
+YASVARA_BUILD ?= $(TARGET_DEVICE)
+YASVARA_VERSION := $(YASVARA_VERSION_MAJOR).$(YASVARA_VERSION_MINOR)-$(YASVARA_BUILD_DATE)-$(YASVARA_BUILDTYPE)-$(YASVARA_VARIANT)-$(YASVARA_BUILD)
+LINEAGE_VERSION := $(YASVARA_VERSION)
+
+PRODUCT_PRODUCT_PROPERTIES += \
+    ro.yasvara.version=$(YASVARA_VERSION) \
+    ro.yasvara.build.version=$(YASVARA_VERSION_MAJOR).$(YASVARA_VERSION_MINOR) \
+    ro.yasvara.variant=$(YASVARA_VARIANT) \
+    ro.yasvara.releasetype=$(YASVARA_BUILDTYPE) \
+    ro.yasvara.base=aosp-$(YASVARA_ANDROID_VERSION)

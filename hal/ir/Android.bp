@@ -1,0 +1,28 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+rust_binary {
+    name: "android.hardware.ir-service.yasvara",
+    relative_install_path: "hw",
+    vendor: true,
+    prefer_rlib: true,
+    srcs: ["src/main.rs"],
+    rustlibs: [
+        "android.hardware.ir-V1-rust",
+        "libandroid_logger",
+        "libbinder_rs",
+        "liblibc",
+        "liblog_rust",
+        "librustutils",
+    ],
+    init_rc: ["android.hardware.ir-service.yasvara.rc"],
+    vintf_fragment_modules: ["android.hardware.ir-service.yasvara.xml"],
+}
+
+vintf_fragment {
+    name: "android.hardware.ir-service.yasvara.xml",
+    src: "android.hardware.ir-service.yasvara.xml",
+    vendor: true,
+}

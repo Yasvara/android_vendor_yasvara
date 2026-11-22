@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# Yasvara flag values, layered on top of vendor/lineage's cp2a release config.
+# Yasvara standalone cp2a release configuration.
 
 default_containers: "product"
 default_containers: "system"
@@ -11,4 +11,9 @@ default_containers: "vendor"
 release_config {
     name: "cp2a"
     flag_value_files: "release_configs/cp2a.textproto"
+}
+
+build_config {
+    name: "cp2a"
+    flag_value_files: "build_config/cp2a.textproto"
 }

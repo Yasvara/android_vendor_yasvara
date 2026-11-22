@@ -1,0 +1,1 @@
+type yasvara_adbd_ctl_service, service_manager_type;
