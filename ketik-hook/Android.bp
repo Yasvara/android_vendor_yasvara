@@ -1,0 +1,40 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Dynamic Kait companion module for Yasvara Ketik. Resolves obfuscated Gboard classes at
+// runtime via DEX structural fingerprinting (cached per Gboard versionCode/lastUpdateTime),
+// keeping AI Writing Tools and immutable experimental flags alive across Play Store updates.
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+android_app {
+    name: "YasvaraKetikHook",
+    srcs: ["src/**/*.java"],
+    resource_dirs: ["res"],
+    asset_dirs: ["assets"],
+    manifest: "AndroidManifest.xml",
+    libs: ["yasvara-kait"],
+    platform_apis: true,
+    system_ext_specific: true,
+    certificate: "platform",
+    optimize: {
+        enabled: false,
+    },
+    dex_preopt: {
+        enabled: false,
+    },
+}
+
+java_test_host {
+    name: "ketik_hook_host_test",
+    srcs: [
+        "src/org/yasvara/ketik/hook/DexFingerprinter.java",
+        "tests/src/**/*.java",
+    ],
+    static_libs: [
+        "junit",
+    ],
+    test_suites: ["general-tests"],
+}

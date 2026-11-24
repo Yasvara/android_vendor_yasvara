@@ -8,4 +8,5 @@
 
 PRODUCT_PACKAGES += \
     libyasvara_kait \
-    yasvara-kait
+    yasvara-kait \
+    YasvaraKetikHook

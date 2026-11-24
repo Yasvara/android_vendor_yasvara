@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-FileCopyrightText: The Yasvara Project
+     SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<resources>
+    <string-array name="xposed_scope">
+        <item>com.google.android.inputmethod.latin</item>
+    </string-array>
+</resources>
