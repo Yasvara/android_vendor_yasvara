@@ -10,5 +10,7 @@ ifneq ($(TARGET_BUILD_VARIANT),user)
 PRODUCT_PACKAGES += \
     yasvara_rootd \
     yasvara_su \
-    yasvara_su_xbin_link
+    yasvara_su_xbin_link \
+    libyasvara_zygisk \
+    yasvara_zygisk_companion
 endif

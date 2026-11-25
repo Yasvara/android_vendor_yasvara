@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "pasang-core"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-dependency Rust OTA engine, liblp CoW extent-aliasing planner, CrAU payload parser, and recovery shared core for Yasvara ROM"
+
+[lib]
+name = "pasang_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pasang"
+path = "src/bin/pasang_cli.rs"
+
+# Strict SPEC-0000: std + core only, zero external crates.
+[dependencies]

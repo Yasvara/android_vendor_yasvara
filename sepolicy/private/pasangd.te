@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pasang lazy native In-OS Live CoW OTA & Recovery Bridge daemon (`pasangd`).
+# Domain and exec types are declared in `vendor/yasvara/sepolicy/public/pasangd.te`.
+
+# Persistent unencrypted state under `/metadata/pasang` and `/metadata/yasvara`.
+type pasang_metadata_file, file_type;
+
+init_daemon_domain(pasangd)
+
+# Allow reading OTA archives across user storage MLS categories.
+typeattribute pasangd mlstrustedsubject;
+
+# Lazy AIDL Binder service (`yasvara.pasang`), called by Laras (`platform_app*`),
+# Settings (`system_app`), `system_server`, and root CLI.
+binder_use(pasangd)
+binder_service(pasangd)
+add_service(pasangd, yasvara_pasang_service)
+binder_call(pasangd, system_server)
+binder_call(system_server, pasangd)
+allow pasangd permission_service:service_manager find;
+allow system_server yasvara_pasang_service:service_manager find;
+
+# Direct platform/system app access (0 KB system_server overhead; gated by
+# `yasvara.permission.MANAGE_PASANG` signature permission inside `pasangd`).
+binder_call(platform_app_all, pasangd)
+binder_call(pasangd, platform_app_all)
+binder_call(system_app, pasangd)
+binder_call(pasangd, system_app)
+
+# Boot Control HAL (IBootControl) for atomic A/B slot switching & merge status.
+hal_client_domain(pasangd, hal_bootctl)
+
+# Reboot trigger after verified slot switch.
+set_prop(pasangd, powerctl_prop)
+
+# Capabilities required for metadata ownership and thread priority.
+allow pasangd self:global_capability_class_set {
+    fowner
+    sys_nice
+};
+allow pasangd self:process { getsched setsched };
+
+# Direct block I/O on `super` and inactive raw A/B partitions (`boot`, `dtbo`, `vendor_boot`, etc.).
+allow pasangd device:dir search;
+allow pasangd block_device:dir r_dir_perms;
+allow pasangd super_block_device_type:blk_file rw_file_perms;
+allow pasangd boot_block_device:blk_file rw_file_perms;
+allow pasangd dm_device:blk_file r_file_perms;
+allowxperm pasangd super_block_device_type:blk_file ioctl { BLKIOMIN BLKALIGNOFF };
+allowxperm pasangd dev_type:blk_file ioctl { BLKDISCARD BLKROGET BLKZEROOUT };
+
+# Persistent unencrypted metadata under `/metadata/pasang` and `/metadata/yasvara`.
+allow pasangd metadata_file:dir { getattr search };
+allow pasangd pasang_metadata_file:dir create_dir_perms;
+allow pasangd pasang_metadata_file:file create_file_perms;
+
+# Read OTA packages from `/data/ota_package`, user Internal Storage (`/data/media/0`), and OTG.
+allow pasangd system_data_root_file:dir search;
+allow pasangd ota_package_file:dir r_dir_perms;
+allow pasangd ota_package_file:file r_file_perms;
+allow pasangd media_userdir_file:dir r_dir_perms;
+allow pasangd media_rw_data_file:dir r_dir_perms;
+allow pasangd media_rw_data_file:file r_file_perms;
+allow pasangd storage_file:dir r_dir_perms;
+allow pasangd storage_file:file r_file_perms;
+allow pasangd sdcard_type:dir r_dir_perms;
+allow pasangd sdcard_type:file r_file_perms;
+allow pasangd fuse:dir r_dir_perms;
+allow pasangd fuse:file r_file_perms;
+allow pasangd platform_app_all:fd use;
+
+# Read `/proc/cmdline` and `/sys/block/dm-*` for slot & live dm-linear inspection.
+allow pasangd proc_cmdline:file r_file_perms;
+allow pasangd sysfs_dm:dir r_dir_perms;
+allow pasangd sysfs_dm:file r_file_perms;
+
+# Developer-only OverlayFS inspection & cleanup (`/mnt/scratch/overlay`).
+# Strictly excluded from production `user` builds to satisfy CTS neverallows.
+# Note: when `clean_overlay=true` during OTA, `pasangd` also drops the stale `scratch`
+# logical partition from the target slot's `LpMetadata` (while protecting live active
+# extents until reboot), guaranteeing a 100% clean overlay-free boot on the new slot.
+userdebug_or_eng(`
+    allow pasangd mnt_user_file:dir search;
+    allow pasangd overlayfs_file:dir create_dir_perms;
+    allow pasangd overlayfs_file:file { create_file_perms unlink };
+    allow pasangd overlayfs_file:lnk_file { getattr unlink };
+')

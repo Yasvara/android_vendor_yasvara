@@ -15,10 +15,19 @@
 //! watch on the data directory wakes it when grants.v1 is replaced, so `enrolled.set` (the
 //! uids Zygote projects the client to) follows the policy.
 
+mod bootguard;
+mod compat_ns;
+mod keywatch;
 mod live;
+mod mgmt;
+mod modules;
+mod mount;
+mod resetprop;
+mod sepolicy;
 mod session;
 mod spawn;
 mod sys;
+mod zygisk_companion;
 
 use std::collections::HashMap;
 use std::io;
@@ -147,8 +156,117 @@ impl RateLimit {
 }
 
 fn usage() -> ! {
-    eprintln!("yasvara_rootd [--version] [--socket PATH] [--data-dir DIR]");
+    eprintln!("yasvara_rootd [--version] [--socket PATH] [--data-dir DIR] [--stage keywatch|post-fs-data|services|boot-completed] [module|resetprop|bootguard|zygisk|unmount ...]");
     std::process::exit(2)
+}
+
+/// Dispatches multi-call applet names (`resetprop`, `ksud`, `akarctl`) or one-shot CLI /
+/// init stage invocations before entering the long-lived daemon loop.
+/// Returns `None` when invoked as the normal `yasvara_rootd` daemon.
+fn try_dispatch_oneshot() -> Option<i32> {
+    let raw_args: Vec<String> = std::env::args().collect();
+    let argv0 = raw_args
+        .first()
+        .and_then(|s| std::path::Path::new(s).file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("yasvara_rootd");
+
+    if argv0 == "resetprop" {
+        return Some(resetprop::cli_main(&raw_args[1..]));
+    }
+
+    let mut data_dir = PathBuf::from(DEFAULT_DATA_DIR);
+    let mut meta_dir: Option<PathBuf> = None;
+    #[cfg_attr(not(feature = "unprivileged-test"), allow(unused_mut))]
+    let mut unpriv = false;
+    let mut rest: Vec<String> = Vec::new();
+    let mut i = 1usize;
+    while i < raw_args.len() {
+        match raw_args[i].as_str() {
+            "--data-dir" if i + 1 < raw_args.len() => {
+                data_dir = PathBuf::from(&raw_args[i + 1]);
+                i += 2;
+            }
+            "--meta-dir" if i + 1 < raw_args.len() => {
+                meta_dir = Some(PathBuf::from(&raw_args[i + 1]));
+                i += 2;
+            }
+            #[cfg(feature = "unprivileged-test")]
+            "--test-unprivileged" => {
+                unpriv = true;
+                i += 1;
+            }
+            _ => {
+                rest.push(raw_args[i].clone());
+                i += 1;
+            }
+        }
+    }
+
+    let first = rest.first().map(String::as_str)?;
+    match first {
+        "--stage" => {
+            let stage = rest.get(1).map(String::as_str).unwrap_or("");
+            let rc = match stage {
+                "keywatch" => {
+                    if keywatch::run_keywatch().is_ok() { 0 } else { 1 }
+                }
+                "post-fs-data" => {
+                    if modules::stage_post_fs_data(&data_dir, meta_dir.as_deref(), unpriv).is_ok() { 0 } else { 1 }
+                }
+                "services" => {
+                    modules::stage_services(&data_dir, unpriv);
+                    0
+                }
+                "boot-completed" => {
+                    modules::stage_boot_completed(&data_dir, meta_dir.as_deref(), unpriv);
+                    0
+                }
+                _ => {
+                    eprintln!("yasvara_rootd: unknown stage '{stage}'");
+                    2
+                }
+            };
+            Some(rc)
+        }
+        "module" => Some(modules::cli_module(&data_dir, &rest[1..], unpriv)),
+        "resetprop" => Some(resetprop::cli_main(&rest[1..])),
+        "bootguard" => {
+            let sub = rest.get(1).map(String::as_str).unwrap_or("status");
+            let bg = bootguard::BootguardPaths::resolve(&data_dir, meta_dir.as_deref());
+            match sub {
+                "status" => {
+                    println!("{}", bootguard::read_status(&data_dir).to_json());
+                    Some(0)
+                }
+                "clear" => Some(if bootguard::clear_safemode(&bg).is_ok() { 0 } else { 1 }),
+                _ => Some(2),
+            }
+        }
+        "zygisk" => {
+            let sub = rest.get(1).map(String::as_str).unwrap_or("sync");
+            match sub {
+                "sync" => {
+                    let safe = bootguard::read_status(&data_dir).safe_mode;
+                    Some(if modules::publish_zygisk_set(&data_dir, safe).is_ok() { 0 } else { 1 })
+                }
+                "features" => {
+                    let feats: Vec<String> = modules::active_managed_features(&data_dir).into_iter().collect();
+                    println!("{}", feats.join(","));
+                    Some(0)
+                }
+                _ => Some(2),
+            }
+        }
+        "unmount" => {
+            let sub = rest.get(1).map(String::as_str).unwrap_or("sync");
+            match sub {
+                "sync" => Some(if modules::publish_unmount_set(&data_dir).is_ok() { 0 } else { 1 }),
+                _ => Some(2),
+            }
+        }
+        _ => None,
+    }
 }
 
 fn parse_config() -> Config {
@@ -250,6 +368,9 @@ fn send_denied_event(cfg: &Config, uid: u32, reason: Reason) {
 }
 
 fn main() {
+    if let Some(code) = try_dispatch_oneshot() {
+        std::process::exit(code);
+    }
     let cfg = parse_config();
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
@@ -288,9 +409,30 @@ fn main() {
         eprintln!("yasvara_rootd: watch {}: {e}", cfg.data_dir.display());
         -1
     });
+    // Optional lazy Zygisk companion socket (only bound when Native Zygisk is actually ON)
+    // and system_server mgmt socket on the same epoll loop.
+    let (mut zfd, mut zpath): (RawFd, Option<PathBuf>) = if modules::is_zygisk_enabled(&cfg.data_dir) {
+        match zygisk_companion::bind_companion_socket(&cfg.data_dir) {
+            Ok((fd, p)) => (fd, Some(p)),
+            Err(_) => (-1, None),
+        }
+    } else {
+        let _ = std::fs::remove_file(cfg.data_dir.join("run/zygisk.sock"));
+        (-1, None)
+    };
+    let (mfd, mpath) = match mgmt::bind_mgmt_socket(&cfg.data_dir) {
+        Ok((fd, p)) => (fd, Some(p)),
+        Err(_) => (-1, None),
+    };
     let mut sources = vec![(lfd, 0u64), (sfd, 1u64)];
     if wfd >= 0 {
         sources.push((wfd, 2u64));
+    }
+    if zfd >= 0 {
+        sources.push((zfd, 3u64));
+    }
+    if mfd >= 0 {
+        sources.push((mfd, 4u64));
     }
     for (fd, token) in sources {
         let mut ev = libc::epoll_event { events: libc::EPOLLIN as u32, u64: token };
@@ -304,6 +446,13 @@ fn main() {
     let mut enrolled_generation = u64::MAX;
     // Publish the set before the first request: an enrolled app is projected from its next start.
     sync_enrolled(&cfg, &mut policy, &mut enrolled_generation);
+    if modules::is_module_engine_enabled(&cfg.data_dir) {
+        let _ = modules::publish_unmount_set(&cfg.data_dir);
+        let _ = modules::publish_zygisk_set(&cfg.data_dir, bootguard::read_status(&cfg.data_dir).safe_mode);
+        mgmt::sync_managed_features_file(&cfg.data_dir);
+    } else {
+        modules::clear_runtime_sets(&cfg.data_dir);
+    }
     let mut limit = RateLimit { buckets: HashMap::new() };
     let mut last_event: HashMap<u32, Instant> = HashMap::new();
     let mut event_generation = 0u64;
@@ -328,10 +477,60 @@ fn main() {
                 continue;
             }
             if ev.u64 == 2 {
-                // grants.v1 was replaced (system_server writes it atomically): without this an
-                // app enrolled just now would never be projected, hence never reach the daemon.
-                if sys::drain_watch(wfd, "grants.v1") {
+                // grants.v1 / modules.conf / zygisk.conf / unmount.conf replaced atomically.
+                let changed = sys::drain_watch_any(wfd);
+                if changed.iter().any(|n| n == "grants.v1") {
                     sync_enrolled(&cfg, &mut policy, &mut enrolled_generation);
+                }
+                if changed.iter().any(|n| n == "modules.conf" || n == "zygisk.conf" || n == "unmount.conf") {
+                    if modules::is_module_engine_enabled(&cfg.data_dir) {
+                        let _ = modules::publish_unmount_set(&cfg.data_dir);
+                        let _ = modules::publish_zygisk_set(
+                            &cfg.data_dir,
+                            bootguard::read_status(&cfg.data_dir).safe_mode,
+                        );
+                    } else {
+                        modules::clear_runtime_sets(&cfg.data_dir);
+                    }
+                    let want_zsock = modules::is_zygisk_enabled(&cfg.data_dir);
+                    if want_zsock && zfd < 0 {
+                        if let Ok((fd, p)) = zygisk_companion::bind_companion_socket(&cfg.data_dir) {
+                            let mut zev = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 3 };
+                            if unsafe { libc::epoll_ctl(ep, libc::EPOLL_CTL_ADD, fd, &mut zev) } == 0 {
+                                zfd = fd;
+                                zpath = Some(p);
+                            } else {
+                                sys::close(fd);
+                            }
+                        }
+                    } else if !want_zsock && zfd >= 0 {
+                        unsafe { libc::epoll_ctl(ep, libc::EPOLL_CTL_DEL, zfd, std::ptr::null_mut()) };
+                        sys::close(zfd);
+                        zfd = -1;
+                        if let Some(p) = zpath.take() {
+                            let _ = std::fs::remove_file(p);
+                        }
+                    }
+                }
+                continue;
+            }
+            if ev.u64 == 3 {
+                loop {
+                    let c = unsafe { libc::accept4(zfd, std::ptr::null_mut(), std::ptr::null_mut(), libc::SOCK_CLOEXEC) };
+                    if c < 0 {
+                        break;
+                    }
+                    zygisk_companion::handle_connection(c, &cfg.data_dir, cfg.unprivileged_test);
+                }
+                continue;
+            }
+            if ev.u64 == 4 {
+                loop {
+                    let c = unsafe { libc::accept4(mfd, std::ptr::null_mut(), std::ptr::null_mut(), libc::SOCK_CLOEXEC) };
+                    if c < 0 {
+                        break;
+                    }
+                    mgmt::handle_connection(c, &cfg.data_dir, cfg.unprivileged_test);
                 }
                 continue;
             }
@@ -344,6 +543,12 @@ fn main() {
                     let _ = std::fs::remove_file(&cfg.enrolled_path);
                     if let Some(p) = &bound {
                         let _ = std::fs::remove_file(p);
+                    }
+                    if let Some(zp) = &zpath {
+                        let _ = std::fs::remove_file(zp);
+                    }
+                    if let Some(mp) = &mpath {
+                        let _ = std::fs::remove_file(mp);
                     }
                     std::process::exit(0);
                 }

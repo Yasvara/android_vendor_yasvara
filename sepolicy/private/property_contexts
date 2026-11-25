@@ -4,3 +4,4 @@ ro.yasvara.boot.source           u:object_r:system_prop:s0 exact string
 
 init.svc.yasvara_sessiond         u:object_r:init_svc_debug_prop:s0 exact string
 sys.yasvara.hentak.scan          u:object_r:hentak_scan_prop:s0 exact string
+persist.sys.pasang.              u:object_r:system_prop:s0 prefix string

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+
+# Create persistent unencrypted metadata directories for Pasang OTA & Pulih Recovery bridge.
+on post-fs-data
+    mkdir /metadata/pasang 0770 root system
+    mkdir /metadata/pasang/last_good 0770 root system
+    mkdir /metadata/yasvara 0770 root system
+
+# Cache authorized ADB public keys on unencrypted `/metadata/yasvara/adb_keys` once booted
+# so future Pulih Recovery boots directly into authorized ADB root without re-pairing.
+on property:sys.boot_completed=1
+    copy /data/misc/adb/adb_keys /metadata/yasvara/adb_keys
+    chmod 0640 /metadata/yasvara/adb_keys
+    chown root system /metadata/yasvara/adb_keys
+
+# Lazy native In-OS Live CoW OTA daemon (`yasvara.pasang`).
+# Started on demand by servicemanager when Laras or CLI connects; exits to 0 KB RAM when idle.
+service pasangd /system_ext/bin/pasangd
+    interface aidl yasvara.pasang
+    class main
+    user root
+    group root system cache media_rw ext_data_rw ext_obb_rw
+    disabled
+    oneshot

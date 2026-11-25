@@ -24,7 +24,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bootguard;
 pub mod grants;
+pub mod module_config;
+pub mod modules;
+pub mod mounts;
+pub mod sepolicy_parse;
+pub mod zip;
 
 /// Where the daemon listens. Apps cannot search `/data/misc` (SELinux), so only `shell` and
 /// system_server reach it here; an enrolled app is given a bind of the same socket instead.

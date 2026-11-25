@@ -2,9 +2,17 @@
 /system/xbin/yasvara_rootd         u:object_r:yasvara_rootd_exec:s0
 /system/xbin/yasvara_su             u:object_r:yasvara_su_client_exec:s0
 /data/misc/yasvara_root(/.*)?     u:object_r:yasvara_root_data_file:s0
+/data/misc/yasvara_root/modules(/.*)? u:object_r:yasvara_mod_data_file:s0
+/data/misc/yasvara_root/modules/[^/]+/zygisk(/.*)? u:object_r:yasvara_zygisk_file:s0
+/data/misc/yasvara_root/modules_update(/.*)? u:object_r:yasvara_mod_data_file:s0
+/data/misc/yasvara_root/adb_compat(/.*)? u:object_r:yasvara_mod_data_file:s0
+/data/misc/yasvara_root/config(/.*)? u:object_r:yasvara_mod_data_file:s0
 /data/misc/yasvara_root/run         u:object_r:yasvara_su_run_file:s0
 /data/misc/yasvara_root/run/ctl\.sock u:object_r:yasvara_su_socket:s0
 /data/misc/yasvara_root/enrolled\.set u:object_r:yasvara_zygote_set_file:s0
+/data/misc/yasvara_root/mounts\.set   u:object_r:yasvara_zygote_set_file:s0
+/data/misc/yasvara_root/unmount\.set  u:object_r:yasvara_zygote_set_file:s0
+/data/misc/yasvara_root/zygisk\.set   u:object_r:yasvara_zygote_set_file:s0
 # The shell-convenience link /system/xbin/su -> yasvara_su keeps AOSP's su_exec label: checkfc
 # rejects a second spec for that path. Exec follows the link, so the transition is decided by
 # the client's own label (no auto-transition into `su`); the link only needs to be readable.
@@ -32,3 +40,8 @@
 # Padat lazy native F2FS realtime compression daemon & policy store.
 /(system_ext|system/system_ext)/bin/padatd        u:object_r:padatd_exec:s0
 /data/system/padat(/.*)?                          u:object_r:padat_data_file:s0
+
+# Pasang lazy native In-OS Live CoW OTA daemon & Recovery Bridge metadata.
+/(system_ext|system/system_ext)/bin/pasangd       u:object_r:pasangd_exec:s0
+/metadata/pasang(/.*)?                            u:object_r:pasang_metadata_file:s0
+/metadata/yasvara(/.*)?                           u:object_r:pasang_metadata_file:s0

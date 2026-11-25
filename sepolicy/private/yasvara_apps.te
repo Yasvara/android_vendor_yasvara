@@ -15,6 +15,9 @@ allow { platform_app_all priv_app_all system_app } yasvara_ketik_service:service
 # Padat: Laras (platform_app*) and Settings (system_app).
 allow { platform_app_all priv_app_all system_app } yasvara_padat_mgr_service:service_manager find;
 
+# Pasang: Laras (platform_app*) and Settings (system_app) talk directly to lazy `pasangd`.
+allow { platform_app_all system_app } yasvara_pasang_service:service_manager find;
+
 # Hentak: audioserver posts game haptic events to system_server, and streams the envelope to the
 # vibrator HAL's "hentak" instance.
 allow audioserver yasvara_hentak_service:service_manager find;

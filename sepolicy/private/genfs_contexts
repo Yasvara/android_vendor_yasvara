@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+
+genfscon proc /yasvara_bootkey u:object_r:proc_yasvara_bootkey:s0

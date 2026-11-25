@@ -1,0 +1,89 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+
+// Pasang — Zero-dependency Rust In-OS Live CoW OTA Engine, CLI (`pasang`),
+// and lazy native AIDL daemon (`pasangd`).
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_defaults {
+    name: "pasang_opt_defaults",
+    edition: "2021",
+    flags: [
+        "-C", "opt-level=3",
+        "-C", "codegen-units=1",
+    ],
+    lints: "vendor",
+    clippy_lints: "vendor",
+}
+
+rust_defaults {
+    name: "pasang_core_defaults",
+    defaults: ["pasang_opt_defaults"],
+    crate_name: "pasang_core",
+    srcs: ["crates/pasang-core/src/lib.rs"],
+}
+
+rust_library {
+    name: "libpasang_core",
+    defaults: ["pasang_core_defaults"],
+    host_supported: true,
+    recovery_available: true,
+}
+
+rust_ffi_static {
+    name: "libpasang_core_ffi",
+    defaults: ["pasang_core_defaults"],
+    recovery_available: true,
+}
+
+rust_test_host {
+    name: "pasang_core_test",
+    crate_name: "pasang_core",
+    srcs: ["crates/pasang-core/src/lib.rs"],
+    edition: "2021",
+    test_suites: ["general-tests"],
+}
+
+// Thin C++ lazy AIDL daemon (`/system_ext/bin/pasangd`) + multi-call CLI symlink (`/system_ext/bin/pasang`).
+// Single binary shares libzstd, liblzma, libbz, BoringSSL, and BootControlClient with zero duplication!
+cc_binary {
+    name: "pasangd",
+    system_ext_specific: true,
+    symlinks: ["pasang"],
+    srcs: [
+        "daemon/main.cpp",
+        "daemon/boot_control_shim.cpp",
+    ],
+    local_include_dirs: ["daemon/include"],
+    init_rc: ["daemon/pasangd.rc"],
+    static_libs: [
+        "libpasang_core_ffi",
+        "yasvara.pasang-cpp",
+        "libzstd",
+        "libbz",
+        "liblzma",
+    ],
+    shared_libs: [
+        "android.hardware.boot@1.0",
+        "android.hardware.boot@1.1",
+        "android.hardware.boot@1.2",
+        "android.hardware.boot-V1-ndk",
+        "libbase",
+        "libbinder",
+        "libboot_control_client",
+        "libcrypto",
+        "libhidlbase",
+        "liblog",
+        "libutils",
+        "libziparchive",
+    ],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O3",
+    ],
+}

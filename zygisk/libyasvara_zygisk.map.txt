@@ -1,0 +1,7 @@
+{
+  global:
+    yasvara_zygisk_pre;
+    yasvara_zygisk_post;
+  local:
+    *;
+};

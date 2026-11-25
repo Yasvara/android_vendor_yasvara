@@ -2,17 +2,36 @@
 # SPDX-FileCopyrightText: The Yasvara Project
 # SPDX-License-Identifier: Apache-2.0
 #
-# The root daemon. system_server starts and stops it (ctl.start / ctl.stop) from the master
-# switch in grants.v1, once boot has completed, so it never competes with the boot-time
-# overlay/vold commits. No property names it, and this file is unreadable to apps
-# (sepolicy_file): the service name is the only trace, and its status property lives in a
-# context no app can read. It binds its own socket in /data/misc/yasvara_root.
+# The root daemon and early-boot module/bootguard stages.
+# Boot stages use `exec` / `exec_background` (no extra `init.svc.*` properties leaked).
+# This file is labeled `sepolicy_file` so apps cannot read it.
+
+on init
+    # Layer-1 hardware Safe Mode shortcut monitor (VolDown x3 / Power+VolDown hold).
+    # Exits automatically as soon as post-fs-data completes.
+    exec_background u:r:yasvara_rootd:s0 root system -- /system/xbin/yasvara_rootd --stage keywatch
 
 on post-fs-data
     # 0771: `shell` must traverse to run/ctl.sock (adb shell su). Apps cannot: SELinux gives them no
     # search on this directory, and Zygote hands an enrolled app a bind of the socket instead.
     mkdir /data/misc/yasvara_root 0771 system system
-    restorecon /data/misc/yasvara_root
+    mkdir /data/misc/yasvara_root/modules 0700 root root
+    mkdir /data/misc/yasvara_root/modules_update 0700 root root
+    mkdir /data/misc/yasvara_root/adb_compat 0700 root root
+    mkdir /data/misc/yasvara_root/config 0700 root root
+    restorecon_recursive /data/misc/yasvara_root
+    # Synchronous post-fs-data stage: Bootguard -> module updates -> sepolicy.rule ->
+    # post-fs-data.d -> Hybrid OverlayFS/Magic Mount -> mounts.set + zygisk.set.
+    exec u:r:yasvara_rootd:s0 root system -- /system/xbin/yasvara_rootd --stage post-fs-data
+
+on nonencrypted
+    exec_background u:r:yasvara_rootd:s0 root system -- /system/xbin/yasvara_rootd --stage services
+
+on property:vold.decrypt=trigger_restart_framework
+    exec_background u:r:yasvara_rootd:s0 root system -- /system/xbin/yasvara_rootd --stage services
+
+on property:sys.boot_completed=1
+    exec_background u:r:yasvara_rootd:s0 root system -- /system/xbin/yasvara_rootd --stage boot-completed
 
 service yasvara_sessiond /system/xbin/yasvara_rootd
     user root

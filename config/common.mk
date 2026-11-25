@@ -244,6 +244,7 @@ $(call inherit-product, vendor/yasvara/spoof/yasvara_spoof.mk)
 $(call inherit-product, vendor/yasvara/kait/yasvara_kait.mk)
 $(call inherit-product, vendor/yasvara/pantau/yasvara_pantau.mk)
 $(call inherit-product, vendor/yasvara/padat/yasvara_padat.mk)
+$(call inherit-product, vendor/yasvara/pasang/yasvara_pasang.mk)
 $(call inherit-product, vendor/yasvara/root/yasvara_root.mk)
 
 -include vendor/lineage-priv/keys/keys.mk

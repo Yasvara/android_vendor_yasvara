@@ -16,3 +16,4 @@ yasvara_saring                            u:object_r:yasvara_saring_service:s0
 yasvara.padat                             u:object_r:yasvara_padat_service:s0
 yasvara_padat                             u:object_r:yasvara_padat_mgr_service:s0
 padat                                     u:object_r:yasvara_padat_mgr_service:s0
+yasvara.pasang                            u:object_r:yasvara_pasang_service:s0

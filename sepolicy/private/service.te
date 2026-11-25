@@ -43,3 +43,6 @@ type yasvara_padat_service, service_manager_type;
 
 # Padat system_server manager service, "yasvara_padat" + "padat" alias.
 type yasvara_padat_mgr_service, system_server_service, service_manager_type;
+
+# Pasang lazy native In-OS Live CoW OTA daemon, "yasvara.pasang".
+type yasvara_pasang_service, service_manager_type;

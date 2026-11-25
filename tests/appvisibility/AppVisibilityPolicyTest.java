@@ -69,6 +69,7 @@ public final class AppVisibilityPolicyTest {
                 .setExemptCallers(new int[] {sysUiAppId, larasAppId, launcher})
                 .setProtectedSystemAppIds(new int[] {sysUiAppId, launcher})
                 .setKnownHideableRomPackages(knownRomPkgs)
+                .setXposedModuleAppIds(new int[] {targetXposed})
                 .setGlobalSelected(
                         new int[] {targetRoot, larasAppId},
                         globalRomPkgs,
@@ -158,6 +159,18 @@ public final class AppVisibilityPolicyTest {
                 YasvaraTabirPolicy.shouldHideUid(whitelistObserver, larasAppId));
         check("exempt launcher: never filtered even if accidentally placed in overrides",
                 !AppVisibilityPolicy.shouldHide(launcher, normalUserApp, "com.whatsapp"));
+
+        // 2e. Xposed metadata strip fast-path gate (avoids unparceling Bundles on normal packages).
+        check("stripXposed: true for non-exempt caller inspecting Xposed module",
+                YasvaraTabirPolicy.shouldStripXposedMetaData(globalObserver, targetXposed));
+        check("stripXposed: false for non-Xposed target package",
+                !YasvaraTabirPolicy.shouldStripXposedMetaData(globalObserver, normalUserApp));
+        check("stripXposed: false for exempt caller (Laras/Launcher)",
+                !YasvaraTabirPolicy.shouldStripXposedMetaData(larasAppId, targetXposed));
+        check("stripXposed: false for self query",
+                !YasvaraTabirPolicy.shouldStripXposedMetaData(targetXposed, targetXposed));
+        check("stripXposed: false for system caller",
+                !YasvaraTabirPolicy.shouldStripXposedMetaData(systemUid, targetXposed));
 
         // 3. Developer Options & ADB Settings / Sticky USB Broadcast concealment.
         check("devKey: adb_enabled matched",

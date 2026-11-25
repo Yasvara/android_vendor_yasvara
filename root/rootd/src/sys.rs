@@ -315,14 +315,14 @@ pub fn watch_dir(dir: &Path) -> io::Result<RawFd> {
     Ok(fd)
 }
 
-/// Drains a [`watch_dir`] descriptor; true if any event named `name`.
-pub fn drain_watch(fd: RawFd, name: &str) -> bool {
-    let mut hit = false;
+/// Drains a [`watch_dir`] descriptor; returns all affected filenames.
+pub fn drain_watch_any(fd: RawFd) -> Vec<String> {
+    let mut names = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
         let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if n <= 0 {
-            return hit;
+            return names;
         }
         let mut off = 0usize;
         let n = n as usize;
@@ -333,12 +333,20 @@ pub fn drain_watch(fd: RawFd, name: &str) -> bool {
             let end = (start + len).min(n);
             let raw = &buf[start..end];
             let raw = raw.split(|&b| b == 0).next().unwrap_or(&[]);
-            if raw == name.as_bytes() {
-                hit = true;
+            if let Ok(s) = std::str::from_utf8(raw) {
+                if !s.is_empty() {
+                    names.push(s.to_string());
+                }
             }
             off = start + len;
         }
     }
+}
+
+/// Drains a [`watch_dir`] descriptor; true if any event named `name`.
+#[allow(dead_code)]
+pub fn drain_watch(fd: RawFd, name: &str) -> bool {
+    drain_watch_any(fd).iter().any(|s| s == name)
 }
 
 /// Atomically replaces `path` with `bytes` (mode 0644, readable by zygote): write to

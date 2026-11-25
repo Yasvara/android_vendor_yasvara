@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pasang lazy native In-OS Live CoW OTA daemon (public type so device vendor policy
+# can grant block-device access to vendor-labelled A/B firmware partitions).
+
+type pasangd, domain, coredomain;
+type pasangd_exec, system_file_type, exec_type, file_type;

@@ -17,8 +17,15 @@ type yasvara_su_socket, file_type, data_file_type, core_data_file_type, mlstrust
 # search on this one directory and never on yasvara_root_data_file (grants, audit, policy).
 type yasvara_su_run_file, file_type, data_file_type, core_data_file_type, mlstrustedobject;
 
-# enrolled.set: the uids Zygote projects the client to. rootd writes it, Zygote reads it.
+# enrolled.set, mounts.set, unmount.set, zygisk.set: published by rootd, read by Zygote.
 type yasvara_zygote_set_file, file_type, data_file_type, core_data_file_type;
+
+# Module storage under /data/misc/yasvara_root/{modules,modules_update,adb_compat,config}.
+# Strictly denied to untrusted_app*; never placed under /data/adb.
+type yasvara_mod_data_file, file_type, data_file_type, core_data_file_type;
+
+# Native Zygisk module shared objects staged/loaded inside scoped children only.
+type yasvara_zygisk_file, file_type, data_file_type, core_data_file_type, mlstrustedobject;
 
 # /system/xbin/yasvara_su, the client (Zygote projects it as /system/xbin/su for enrolled apps
 # only). It runs in the *caller's* domain (no transition) and is deliberately not `su_exec`:
@@ -69,17 +76,30 @@ userdebug_or_eng(`
 allow yasvara_rootd yasvara_root_data_file:dir create_dir_perms;
 allow yasvara_rootd yasvara_root_data_file:file create_file_perms;
 allow yasvara_rootd yasvara_root_data_file:sock_file write;
-# The daemon binds its own socket and publishes enrolled.set; both get their label at creation
-# (named transition for the set: it is written as enrolled.set.new, then renamed).
+allow yasvara_rootd yasvara_mod_data_file:dir create_dir_perms;
+allow yasvara_rootd yasvara_mod_data_file:file create_file_perms;
+allow yasvara_rootd yasvara_mod_data_file:lnk_file create_file_perms;
+allow yasvara_rootd yasvara_zygisk_file:dir create_dir_perms;
+allow yasvara_rootd yasvara_zygisk_file:file create_file_perms;
+# The daemon binds its own socket and publishes Zygote sets; each gets its label at creation
+# via named transitions when written as `<name>.new` and atomically renamed.
 allow yasvara_rootd yasvara_su_run_file:dir create_dir_perms;
 type_transition yasvara_rootd yasvara_su_run_file:sock_file yasvara_su_socket;
 type_transition yasvara_rootd yasvara_root_data_file:dir yasvara_su_run_file "run";
 type_transition yasvara_rootd yasvara_root_data_file:file yasvara_zygote_set_file "enrolled.set.new";
+type_transition yasvara_rootd yasvara_root_data_file:file yasvara_zygote_set_file "mounts.set.new";
+type_transition yasvara_rootd yasvara_root_data_file:file yasvara_zygote_set_file "unmount.set.new";
+type_transition yasvara_rootd yasvara_root_data_file:file yasvara_zygote_set_file "zygisk.set.new";
 allow yasvara_rootd yasvara_su_socket:sock_file { create setattr unlink rename write getattr };
 allow yasvara_rootd yasvara_zygote_set_file:file { create_file_perms };
 allow yasvara_rootd yasvara_root_data_file:dir { watch watch_reads };
 allow yasvara_rootd system_server:unix_dgram_socket sendto;
 get_prop(yasvara_rootd, exported3_system_prop)
+# Early-boot hardware Safe Mode latch (/proc/yasvara_bootkey) and input event watcher.
+type proc_yasvara_bootkey, fs_type, proc_type;
+allow yasvara_rootd proc_yasvara_bootkey:file r_file_perms;
+allow yasvara_rootd input_device:dir r_dir_perms;
+allow yasvara_rootd input_device:chr_file r_file_perms;
 
 # What the permissive rollout collected on a device (run_device_tests.sh): descriptors the caller
 # passes in (the SHELL tier's pipes, the pty slave) and the daemon's own pty handling.
@@ -95,7 +115,7 @@ allow yasvara_rootd adbd:unix_stream_socket { read write getattr };
 allow yasvara_rootd shell_data_file:file { read write append getattr };
 
 # An app that is not enrolled is meant to be refused here; no need to fill the log with it.
-dontaudit appdomain { yasvara_root_data_file yasvara_zygote_set_file }:{ dir file sock_file } *;
+dontaudit appdomain { yasvara_root_data_file yasvara_mod_data_file yasvara_zygote_set_file }:{ dir file sock_file } *;
 
 # ---- who may talk to it -------------------------------------------------------------------
 # Every app domain and adb shell reach the socket; the daemon refuses unenrolled uids with
@@ -157,6 +177,9 @@ allow { untrusted_app_all shell } yasvara_tabir_file:dir { search getattr open r
 allow { untrusted_app_all shell } yasvara_tabir_file:file getattr;
 
 allow zygote yasvara_root_data_file:dir search;
+allow zygote yasvara_mod_data_file:dir search;
 allow zygote yasvara_su_run_file:dir { search getattr };
 allow zygote yasvara_zygote_set_file:file r_file_perms;
 allow zygote yasvara_su_client_exec:file { getattr open read };
+allow zygote yasvara_zygisk_file:dir search;
+allow zygote yasvara_zygisk_file:file r_file_perms;
