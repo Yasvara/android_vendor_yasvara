@@ -424,6 +424,8 @@ pub struct PayloadManifest {
     pub signatures_size: u64,
     pub dynamic_metadata: DynamicPartitionMetadata,
     pub partitions: Vec<PartitionUpdate>,
+    /// Payload covers a subset of partitions; the rest are carried over from the source slot.
+    pub partial_update: bool,
 }
 
 fn parse_extent(b: &[u8]) -> Result<BlockExtent, String> {
@@ -632,6 +634,7 @@ pub fn parse_payload_at<R: Read + Seek>(r: &mut R, base: u64) -> Result<PayloadM
     let mut signatures_size = 0u64;
     let mut dynamic_metadata = DynamicPartitionMetadata::default();
     let mut partitions = Vec::new();
+    let mut partial_update = false;
 
     let mut i = 0;
     while let Some((f, v)) = next_field(&manifest_bytes, &mut i)? {
@@ -642,6 +645,7 @@ pub fn parse_payload_at<R: Read + Seek>(r: &mut R, base: u64) -> Result<PayloadM
             (12, PbVal::Varint(mv)) => minor_version = mv as u32,
             (13, PbVal::Bytes(pb)) => partitions.push(parse_partition_update(pb)?),
             (15, PbVal::Bytes(dm)) => dynamic_metadata = parse_dynamic_metadata(dm)?,
+            (16, PbVal::Varint(x)) => partial_update = x != 0,
             _ => {}
         }
     }
@@ -660,6 +664,7 @@ pub fn parse_payload_at<R: Read + Seek>(r: &mut R, base: u64) -> Result<PayloadM
         signatures_size,
         dynamic_metadata,
         partitions,
+        partial_update,
     })
 }
 
@@ -697,10 +702,22 @@ pub fn build_synthetic_payload(
     dynamic_names: &[&str],
     partitions: &[(&str, &[u8])],
 ) -> Vec<u8> {
+    build_synthetic_payload_ex(block_size, dynamic_names, partitions, false)
+}
+
+pub fn build_synthetic_payload_ex(
+    block_size: u64,
+    dynamic_names: &[&str],
+    partitions: &[(&str, &[u8])],
+    partial_update: bool,
+) -> Vec<u8> {
     let mut data_blobs = Vec::new();
     let mut manifest = Vec::new();
     put_field_varint(&mut manifest, 3, block_size);
-    put_field_varint(&mut manifest, 12, 0);
+    put_field_varint(&mut manifest, 12, if partial_update { 7 } else { 0 });
+    if partial_update {
+        put_field_varint(&mut manifest, 16, 1);
+    }
 
     for &(name, img) in partitions {
         let mut pu = Vec::new();

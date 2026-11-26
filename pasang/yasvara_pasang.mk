@@ -6,4 +6,10 @@
 #
 
 PRODUCT_PACKAGES += \
-    pasangd
+    pasangd \
+    pulih \
+    pulih_twrp_link \
+    pulih_fox_link \
+    pulih_ors_link \
+    pulih_screencap_link \
+    pulih_input_link

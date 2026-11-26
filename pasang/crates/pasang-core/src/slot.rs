@@ -361,6 +361,10 @@ pub struct OtaOptions {
     /// successful OTA commit so dev overlay pushes never mask freshly installed partitions.
     /// Hidden from normal `user` builds in Laras UI.
     pub clean_overlay: bool,
+    /// Carry the `scratch` overlay into the target slot. Off by default: upperdirs hold files
+    /// built against the running build, and mounting them over a new build mixes sepolicy,
+    /// odex and binaries from two builds.
+    pub keep_overlay: bool,
     /// Enable Layer 2 Sub-Partition `dm-linear` Extent Aliasing (default: true).
     pub enable_extent_aliasing: bool,
     /// Minimum contiguous alias run in 4 KiB blocks (default: 64 = 256 KiB).
@@ -381,6 +385,7 @@ impl Default for OtaOptions {
     fn default() -> Self {
         Self {
             clean_overlay: false,
+            keep_overlay: false,
             enable_extent_aliasing: true,
             min_alias_blocks: 64, // 256 KiB
             fast_verify: false,
@@ -398,6 +403,9 @@ impl OtaOptions {
         let mut opts = Self::default();
         if let Some(v) = json_bool(json, "clean_overlay") {
             opts.clean_overlay = v;
+        }
+        if let Some(v) = json_bool(json, "keep_overlay") {
+            opts.keep_overlay = v;
         }
         if let Some(v) = json_bool(json, "enable_extent_aliasing") {
             opts.enable_extent_aliasing = v;

@@ -44,6 +44,9 @@ pub struct OtaEnvironment {
     pub otacerts_path: PathBuf,
     /// Optional externally-supplied live dm-linear occupied sector intervals.
     pub live_dm_occupied: Vec<(u64, u64)>,
+    /// A/B partitions of this device (`ro.product.ab_ota_partitions`), used to carry raw
+    /// partitions a partial payload does not include over from the active slot.
+    pub ab_partitions: Vec<String>,
 }
 
 impl OtaEnvironment {
@@ -56,8 +59,105 @@ impl OtaEnvironment {
             proc_mounts_path: PathBuf::from("/proc/mounts"),
             otacerts_path: PathBuf::from("/system/etc/security/otacerts.zip"),
             live_dm_occupied: Vec::new(),
+            ab_partitions: read_ab_ota_partitions(),
         }
     }
+}
+
+fn read_ab_ota_partitions() -> Vec<String> {
+    const KEY: &str = "ro.product.ab_ota_partitions=";
+    for f in [
+        "/product/etc/build.prop",
+        "/system/build.prop",
+        "/system_ext/etc/build.prop",
+        "/vendor/build.prop",
+    ] {
+        if let Ok(txt) = fs::read_to_string(f) {
+            if let Some(v) = txt.lines().find_map(|l| l.strip_prefix(KEY)) {
+                return v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Copy planned write segments of a carried-over dynamic partition from the active slot's
+/// sectors (`src`, logical order) into freshly allocated super sectors, with readback.
+fn copy_carried_segments(
+    super_rw: &mut File,
+    src: &[LpExtent],
+    segs: &[crate::lp::PhysicalWriteSegment],
+    total_written: &mut u64,
+) -> Result<(), String> {
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut back = vec![0u8; 1024 * 1024];
+    for seg in segs {
+        let mut done = 0u64;
+        while done < seg.length_bytes {
+            let logical = seg.logical_byte_offset + done;
+            let mut ext_base = 0u64;
+            let mut phys = None;
+            for e in src {
+                let len = e.num_sectors * LP_SECTOR_SIZE;
+                if logical < ext_base + len {
+                    phys = Some((e.target_data * LP_SECTOR_SIZE + (logical - ext_base), ext_base + len - logical));
+                    break;
+                }
+                ext_base += len;
+            }
+            let (src_off, avail) = phys.ok_or("carried segment beyond source extents")?;
+            let n = (seg.length_bytes - done).min(avail).min(buf.len() as u64) as usize;
+            let dst_off = seg.super_byte_offset + done;
+            super_rw
+                .seek(SeekFrom::Start(src_off))
+                .and_then(|_| super_rw.read_exact(&mut buf[..n]))
+                .map_err(|e| format!("read carried src@{src_off}: {e}"))?;
+            super_rw
+                .seek(SeekFrom::Start(dst_off))
+                .and_then(|_| super_rw.write_all(&buf[..n]))
+                .map_err(|e| format!("write carried dst@{dst_off}: {e}"))?;
+            super_rw
+                .seek(SeekFrom::Start(dst_off))
+                .and_then(|_| super_rw.read_exact(&mut back[..n]))
+                .map_err(|e| format!("readback carried dst@{dst_off}: {e}"))?;
+            if buf[..n] != back[..n] {
+                return Err(format!("ABORT BEFORE COMMIT: carried copy mismatch at super byte {dst_off}"));
+            }
+            *total_written += n as u64;
+            done += n as u64;
+        }
+    }
+    Ok(())
+}
+
+fn block_dev_size(path: &Path) -> Result<u64, String> {
+    let mut f = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    f.seek(SeekFrom::End(0)).map_err(|e| format!("size {}: {e}", path.display()))
+}
+
+fn copy_raw_partition(src: &Path, dst: &Path, size: u64, total_written: &mut u64) -> Result<(), String> {
+    let mut s = File::open(src).map_err(|e| format!("open {}: {e}", src.display()))?;
+    let mut d = OpenOptions::new()
+        .write(true)
+        .open(dst)
+        .map_err(|e| format!("open rw {}: {e}", dst.display()))?;
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    let mut rem = size;
+    while rem > 0 {
+        let n = (rem as usize).min(buf.len());
+        s.read_exact(&mut buf[..n]).map_err(|e| format!("read {}: {e}", src.display()))?;
+        d.write_all(&buf[..n]).map_err(|e| format!("write {}: {e}", dst.display()))?;
+        rem -= n as u64;
+        *total_written += n as u64;
+    }
+    d.sync_data().map_err(|e| format!("fsync {}: {e}", dst.display()))
+}
+
+/// AVB vbmeta header flags (`AVB0` magic, flags at byte 120), or `None` if unreadable.
+fn read_vbmeta_flags(path: &Path) -> Option<u32> {
+    let mut hdr = [0u8; 128];
+    File::open(path).ok()?.read_exact(&mut hdr).ok()?;
+    (&hdr[..4] == b"AVB0").then(|| u32::from_be_bytes(hdr[120..124].try_into().unwrap()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +328,9 @@ pub struct OtaPlanSummary {
     pub free_super_before: u64,
     pub free_super_after: u64,
     pub overlay_files_present: u64,
+    pub partial_update: bool,
+    pub carried_partitions: usize,
+    pub carried_bytes_copied: u64,
 }
 
 impl OtaPlanSummary {
@@ -244,7 +347,8 @@ impl OtaPlanSummary {
              \"bytes_total_logical\":{},\"bytes_aliased\":{},\"bytes_zeroed\":{},\
              \"bytes_skipped_whole\":{},\"bytes_to_write\":{},\"saved_pct\":{:.1},\
              \"total_extents\":{},\"free_super_before\":{},\"free_super_after\":{},\
-             \"overlay_files_present\":{}}}",
+             \"overlay_files_present\":{},\"partial_update\":{},\"carried_partitions\":{},\
+             \"carried_bytes_copied\":{}}}",
             self.active_slot,
             self.target_slot,
             self.signature_verified,
@@ -261,6 +365,9 @@ impl OtaPlanSummary {
             self.free_super_before,
             self.free_super_after,
             self.overlay_files_present,
+            self.partial_update,
+            self.carried_partitions,
+            self.carried_bytes_copied,
         )
     }
 }
@@ -800,6 +907,154 @@ fn read_raw_partition_hash(dev_path: &Path, exact_size: u64) -> Result<[u8; 32],
     Ok(h.finalize())
 }
 
+/// Active-slot extents, new size and new SHA-256 of a whole-partition alias candidate.
+type Layer1Job = (Vec<LpExtent>, u64, [u8; 32]);
+
+/// Runs `f` over `items` on up to `workers` threads, preserving order.
+fn parallel_map<T: Sync, R: Send>(items: &[T], workers: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = AtomicUsize::new(0);
+    let out: Mutex<Vec<Option<R>>> = Mutex::new((0..items.len()).map(|_| None).collect());
+    thread::scope(|s| {
+        for _ in 0..workers.clamp(1, items.len().max(1)) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= items.len() {
+                    break;
+                }
+                let r = f(&items[i]);
+                out.lock().unwrap()[i] = Some(r);
+            });
+        }
+    });
+    out.into_inner().unwrap().into_iter().map(|r| r.expect("parallel_map slot")).collect()
+}
+
+fn io_workers(opts: &OtaOptions) -> usize {
+    let auto = thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let cap = if opts.max_threads == 0 { 8 } else { opts.max_threads };
+    auto.min(cap).max(1)
+}
+
+const PLAN_CACHE_MAGIC: &[u8; 4] = b"YSPC";
+const PLAN_CACHE_VERSION: u32 = 1;
+
+type CachedDynamicPlan = (Vec<OtaPartitionExtentSpec>, usize, u64);
+
+fn plan_cache_key(
+    manifest_sha: &[u8; 32],
+    active_slot: u32,
+    super_hdr: &[u8],
+    live_occupied: &[(u64, u64)],
+    preserve_scratch: bool,
+    opts: &OtaOptions,
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(crate::PASANG_VERSION.as_bytes());
+    h.update(manifest_sha);
+    h.update(&active_slot.to_le_bytes());
+    h.update(super_hdr);
+    for (a, b) in live_occupied {
+        h.update(&a.to_le_bytes());
+        h.update(&b.to_le_bytes());
+    }
+    h.update(&[preserve_scratch as u8, opts.enable_extent_aliasing as u8]);
+    h.update(&opts.min_alias_blocks.to_le_bytes());
+    h.finalize()
+}
+
+fn save_plan_cache(
+    path: &Path,
+    key: &[u8; 32],
+    specs: &[OtaPartitionExtentSpec],
+    whole_skipped: usize,
+    dyn_bytes_skipped: u64,
+) -> std::io::Result<()> {
+    let mut b = Vec::with_capacity(4096);
+    b.extend_from_slice(PLAN_CACHE_MAGIC);
+    b.extend_from_slice(&PLAN_CACHE_VERSION.to_le_bytes());
+    b.extend_from_slice(key);
+    b.extend_from_slice(&(whole_skipped as u64).to_le_bytes());
+    b.extend_from_slice(&dyn_bytes_skipped.to_le_bytes());
+    b.extend_from_slice(&(specs.len() as u32).to_le_bytes());
+    for sp in specs {
+        b.extend_from_slice(&(sp.base_name.len() as u16).to_le_bytes());
+        b.extend_from_slice(sp.base_name.as_bytes());
+        b.extend_from_slice(&sp.total_bytes.to_le_bytes());
+        b.extend_from_slice(&(sp.runs.len() as u32).to_le_bytes());
+        for run in &sp.runs {
+            match *run {
+                LogicalRun::Alias { phys_start_sector, num_sectors } => {
+                    b.push(0);
+                    b.extend_from_slice(&phys_start_sector.to_le_bytes());
+                    b.extend_from_slice(&num_sectors.to_le_bytes());
+                }
+                LogicalRun::Zero { num_sectors } => {
+                    b.push(1);
+                    b.extend_from_slice(&num_sectors.to_le_bytes());
+                }
+                LogicalRun::Allocate { num_sectors } => {
+                    b.push(2);
+                    b.extend_from_slice(&num_sectors.to_le_bytes());
+                }
+            }
+        }
+    }
+    let digest = sha256_bytes(&b);
+    b.extend_from_slice(&digest);
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, &b)?;
+    fs::rename(&tmp, path)
+}
+
+fn load_plan_cache(path: &Path, key: &[u8; 32]) -> Option<CachedDynamicPlan> {
+    let raw = fs::read(path).ok()?;
+    if raw.len() < 32 {
+        return None;
+    }
+    let (body, digest) = raw.split_at(raw.len() - 32);
+    if sha256_bytes(body) != digest {
+        return None;
+    }
+    let mut pos = 0usize;
+    let mut take = |n: usize| -> Option<&[u8]> {
+        let s = body.get(pos..pos + n)?;
+        pos += n;
+        Some(s)
+    };
+    if take(4)? != PLAN_CACHE_MAGIC {
+        return None;
+    }
+    let u32_of = |s: &[u8]| u32::from_le_bytes(s.try_into().unwrap());
+    let u64_of = |s: &[u8]| u64::from_le_bytes(s.try_into().unwrap());
+    if u32_of(take(4)?) != PLAN_CACHE_VERSION || take(32)? != key {
+        return None;
+    }
+    let whole_skipped = u64_of(take(8)?) as usize;
+    let dyn_bytes = u64_of(take(8)?);
+    let n = u32_of(take(4)?) as usize;
+    let mut specs = Vec::with_capacity(n);
+    for _ in 0..n {
+        let nl = u16::from_le_bytes(take(2)?.try_into().unwrap()) as usize;
+        let base_name = String::from_utf8(take(nl)?.to_vec()).ok()?;
+        let total_bytes = u64_of(take(8)?);
+        let nr = u32_of(take(4)?) as usize;
+        let mut runs = Vec::with_capacity(nr);
+        for _ in 0..nr {
+            runs.push(match take(1)?[0] {
+                0 => LogicalRun::Alias {
+                    phys_start_sector: u64_of(take(8)?),
+                    num_sectors: u64_of(take(8)?),
+                },
+                1 => LogicalRun::Zero { num_sectors: u64_of(take(8)?) },
+                2 => LogicalRun::Allocate { num_sectors: u64_of(take(8)?) },
+                _ => return None,
+            });
+        }
+        specs.push(OtaPartitionExtentSpec { base_name, total_bytes, runs });
+    }
+    Some((specs, whole_skipped, dyn_bytes))
+}
+
 /// Core 9-step Atomic In-OS CoW OTA execution (both dry-run plan and real apply!).
 pub fn run_ota(
     env: &OtaEnvironment,
@@ -892,10 +1147,11 @@ pub fn run_ota(
 
     check_cancel()?;
 
-    // Inspect overlays upfront so we know whether `scratch` is mounted & how many dev files exist.
-    // Safety: always keep mounted `scratch` sectors in `live_occupied` so live OS never faults
-    // before reboot; when `opts.clean_overlay == true`, omit `scratch` from the target slot's
-    // `LpMetadata` (`preserve_scratch = false`) so the new slot boots 100% clean with zero stale overlays!
+    // Mounted scratch stays protected so the running slot keeps working until reboot. fs_mgr maps
+    // scratch from the booting slot's metadata, so the target slot lists it only where the old
+    // upperdirs still fit the new lowers: on `keep_overlay`, or for a partial payload, which
+    // carries every partition it does not rewrite byte for byte (the upperdirs of the ones it
+    // rewrites are cleared after the commit). A full OTA boots without old-build upperdirs.
     let ovl_status = inspect_overlays(&env.proc_mounts_path, &env.scratch_overlay_root);
     let mut effective_live_occupied = env.live_dm_occupied.clone();
     if ovl_status.scratch_mounted {
@@ -907,7 +1163,8 @@ pub fn run_ota(
             }
         }
     }
-    let preserve_scratch = ovl_status.scratch_mounted && !opts.clean_overlay;
+    let preserve_scratch =
+        ovl_status.scratch_mounted && (opts.keep_overlay || manifest.partial_update);
 
     // Load cached slot hashes & resume state
     let slot_cache_path = env.metadata_dir.join("slot_state.bin");
@@ -922,8 +1179,12 @@ pub fn run_ota(
 
     let mut dynamic_updates: Vec<&PartitionUpdate> = Vec::new();
     let mut raw_updates: Vec<&PartitionUpdate> = Vec::new();
+    let active_has = |base: &str| {
+        let n = format!("{base}{active_suffix}");
+        active_meta.partitions.iter().any(|p| p.name == n)
+    };
     for pu in &manifest.partitions {
-        if manifest.dynamic_metadata.is_dynamic(&pu.name) {
+        if manifest.dynamic_metadata.is_dynamic(&pu.name) || active_has(&pu.name) {
             dynamic_updates.push(pu);
         } else {
             raw_updates.push(pu);
@@ -942,102 +1203,205 @@ pub fn run_ota(
     // ====================================================================
     update_prog(&|g| g.phase = OtaPhase::Planning);
 
-    let mut dynamic_specs: Vec<OtaPartitionExtentSpec> = Vec::with_capacity(dynamic_updates.len());
-    let mut whole_skipped_count = 0usize;
-    let mut dyn_bytes_skipped_whole = 0u64;
-    let mut bytes_skipped_whole = 0u64;
-
-    for (di, pu) in dynamic_updates.iter().enumerate() {
-        check_cancel()?;
-        update_prog(&|g| {
-            g.phase = OtaPhase::Indexing;
-            g.current_partition = format!("{} ({}/{})", pu.name, di + 1, dynamic_updates.len());
-            g.partitions_done = di;
-        });
-        let active_name = format!("{}{active_suffix}", pu.name);
-        let active_part = active_meta
-            .partitions
+    // Indexing is the slow part and depends only on the payload, the active slot and the
+    // allocation inputs, so a dry run leaves its result for the apply that follows it.
+    let plan_key = plan_cache_key(
+        &manifest.metadata_sha256,
+        active_slot,
+        &super_hdr,
+        &effective_live_occupied,
+        preserve_scratch,
+        opts,
+    );
+    let plan_cache_path = env.metadata_dir.join("plan_cache.bin");
+    let cached_specs = load_plan_cache(&plan_cache_path, &plan_key)
+        .filter(|c| c.0.len() == dynamic_updates.len());
+    let reused_plan = cached_specs.is_some();
+    let (dynamic_specs, whole_skipped_count, dyn_bytes_skipped_whole) = if let Some(c) = cached_specs {
+        c
+    } else {
+        // Layer-1 candidates are read and hashed in parallel. A cache entry that disagrees with the
+        // new hash proves a change without reading; a cache entry that agrees is still verified,
+        // since super can be rewritten behind pasang (kernel CoW install, recovery flash).
+        let layer1_jobs: Vec<Option<Layer1Job>> = dynamic_updates
             .iter()
-            .find(|p| p.name == active_name);
-
-        // Layer 1: Whole-Partition Exact SHA-256 Match -> 100% Alias, 0 bytes decoded/written!
-        let mut whole_aliased = false;
-        if let (Some(ap), Some(new_hash)) = (active_part, pu.new_info.hash) {
-            let active_exts = active_meta.partition_extents(ap);
-            let all_linear = active_exts
-                .iter()
-                .all(|e| e.target_type == LP_TARGET_TYPE_LINEAR);
-            let active_sz: u64 = active_exts.iter().map(|e| e.num_sectors * LP_SECTOR_SIZE).sum();
-            let cached_match = slot_cache
-                .slot_map(active_slot)
-                .get(&pu.name)
-                .is_some_and(|c| c.size == pu.new_info.size && c.sha256 == new_hash);
-            let verified_match = if cached_match {
-                true
-            } else if all_linear && active_sz >= pu.new_info.size {
-                verify_dynamic_extents_sha256(&mut super_ro, active_exts, pu.new_info.size)
-                    .map(|h| h == new_hash)
-                    .unwrap_or(false)
-            } else {
-                false
+            .map(|pu| {
+                let new_hash = pu.new_info.hash?;
+                let ap = active_meta
+                    .partitions
+                    .iter()
+                    .find(|p| p.name == format!("{}{active_suffix}", pu.name))?;
+                let exts = active_meta.partition_extents(ap);
+                let all_linear = exts.iter().all(|e| e.target_type == LP_TARGET_TYPE_LINEAR);
+                let active_sz: u64 = exts.iter().map(|e| e.num_sectors * LP_SECTOR_SIZE).sum();
+                if !all_linear || active_sz != align_up(pu.new_info.size, LP_BLOCK_SIZE) {
+                    return None;
+                }
+                let known_changed = slot_cache
+                    .slot_map(active_slot)
+                    .get(&pu.name)
+                    .is_some_and(|c| c.size != pu.new_info.size || c.sha256 != new_hash);
+                if known_changed {
+                    return None;
+                }
+                Some((exts.to_vec(), pu.new_info.size, new_hash))
+            })
+            .collect();
+        update_prog(&|g| g.current_partition = "layer1-verify".into());
+        let layer1_match: Vec<bool> = parallel_map(&layer1_jobs, io_workers(opts), |job| {
+            let Some((exts, size, hash)) = job else {
+                return false;
             };
-            if all_linear && verified_match && active_sz == align_up(pu.new_info.size, LP_BLOCK_SIZE)
-            {
-                let runs: Vec<LogicalRun> = active_exts
+            File::open(&env.super_device)
+                .ok()
+                .and_then(|mut f| verify_dynamic_extents_sha256(&mut f, exts, *size).ok())
+                .is_some_and(|h| h == *hash)
+        });
+        check_cancel()?;
+
+        let mut dynamic_specs: Vec<OtaPartitionExtentSpec> = Vec::with_capacity(dynamic_updates.len());
+        let mut whole_skipped_count = 0usize;
+        let mut dyn_bytes_skipped_whole = 0u64;
+
+        for (di, pu) in dynamic_updates.iter().enumerate() {
+            check_cancel()?;
+            update_prog(&|g| {
+                g.phase = OtaPhase::Indexing;
+                g.current_partition = format!("{} ({}/{})", pu.name, di + 1, dynamic_updates.len());
+                g.partitions_done = di;
+            });
+            let active_name = format!("{}{active_suffix}", pu.name);
+            let active_part = active_meta
+                .partitions
+                .iter()
+                .find(|p| p.name == active_name);
+
+            // Layer 1: Whole-Partition Exact SHA-256 Match -> 100% Alias, 0 bytes decoded/written!
+            let mut whole_aliased = false;
+            if let (Some(ap), true) = (active_part, layer1_match[di]) {
+                let active_exts = active_meta.partition_extents(ap);
+                {
+                    let runs: Vec<LogicalRun> = active_exts
+                        .iter()
+                        .map(|e| LogicalRun::Alias {
+                            phys_start_sector: e.target_data,
+                            num_sectors: e.num_sectors,
+                        })
+                        .collect();
+                    dynamic_specs.push(OtaPartitionExtentSpec {
+                        base_name: pu.name.clone(),
+                        total_bytes: pu.new_info.size,
+                        runs,
+                    });
+                    whole_skipped_count += 1;
+                    dyn_bytes_skipped_whole += pu.new_info.size;
+                    whole_aliased = true;
+                }
+            }
+
+            if whole_aliased {
+                continue;
+            }
+
+            let padded_blocks = align_up(pu.new_info.size, LP_BLOCK_SIZE) / LP_BLOCK_SIZE;
+            let runs = if opts.enable_extent_aliasing {
+                if let Some(ap) = active_part {
+                    update_prog(&|g| g.phase = OtaPhase::Indexing);
+                    let exts = active_meta.partition_extents(ap);
+                    let est_blocks = (exts.iter().map(|e| e.num_sectors).sum::<u64>() / LP_SECTORS_PER_BLOCK) as usize;
+                    let mut part_index = ActiveBlockIndex::with_capacity(est_blocks);
+                    part_index.index_super_extents_parallel(&mut super_ro, exts)?;
+                    check_cancel()?;
+
+                    update_prog(&|g| g.phase = OtaPhase::Planning);
+                    let new_keys = stream_index_partition_blocks(&mut payload_file, &manifest, pu, cancel)?;
+                    let (runs, _stats) =
+                        build_extent_alias_runs(&new_keys, &part_index, opts.min_alias_blocks);
+                    runs
+                } else {
+                    vec![LogicalRun::Allocate {
+                        num_sectors: padded_blocks * LP_SECTORS_PER_BLOCK,
+                    }]
+                }
+            } else {
+                vec![LogicalRun::Allocate {
+                    num_sectors: padded_blocks * LP_SECTORS_PER_BLOCK,
+                }]
+            };
+
+            dynamic_specs.push(OtaPartitionExtentSpec {
+                base_name: pu.name.clone(),
+                total_bytes: pu.new_info.size,
+                runs,
+            });
+        }
+        (dynamic_specs, whole_skipped_count, dyn_bytes_skipped_whole)
+    };
+    let mut whole_skipped_count = whole_skipped_count;
+    let mut bytes_skipped_whole = dyn_bytes_skipped_whole;
+    if opts.dry_run && !reused_plan {
+        let _ = fs::create_dir_all(&env.metadata_dir);
+        let _ = save_plan_cache(
+            &plan_cache_path,
+            &plan_key,
+            &dynamic_specs,
+            whole_skipped_count,
+            dyn_bytes_skipped_whole,
+        );
+    }
+
+    // Partial payload: every active-slot dynamic partition it does not touch is aliased
+    // as-is into the target slot.
+    let mut dynamic_specs = dynamic_specs;
+    let mut carried_dynamic: Vec<(String, Vec<LpExtent>)> = Vec::new();
+    if manifest.partial_update {
+        if env.ab_partitions.is_empty() {
+            return Err("Partial payload needs ro.product.ab_ota_partitions to carry raw partitions".into());
+        }
+        let in_payload = |n: &str| manifest.partitions.iter().any(|p| p.name == n);
+        if !in_payload("vbmeta") {
+            let flags = read_vbmeta_flags(&env.by_name_dir.join(format!("vbmeta{active_suffix}")));
+            if flags.is_some_and(|f| f & 3 != 3) {
+                return Err(
+                    "Partial payload without vbmeta needs AVB verification and hashtree disabled \
+                     (vbmeta --flags 3) on the active slot"
+                        .into(),
+                );
+            }
+        }
+        for p in &active_meta.partitions {
+            let Some(base) = p.name.strip_suffix(active_suffix) else {
+                continue;
+            };
+            if dynamic_updates.iter().any(|u| u.name == base) {
+                continue;
+            }
+            let exts = active_meta.partition_extents(p).to_vec();
+            if exts.iter().any(|e| e.target_type != LP_TARGET_TYPE_LINEAR || e.target_source != 0) {
+                return Err(format!("Cannot carry over {}: non-linear extents", p.name));
+            }
+            let bytes: u64 = exts.iter().map(|e| e.num_sectors * LP_SECTOR_SIZE).sum();
+            if bytes % LP_BLOCK_SIZE != 0 {
+                return Err(format!("Cannot carry over {}: size {bytes} not 4 KiB aligned", p.name));
+            }
+            dynamic_specs.push(OtaPartitionExtentSpec {
+                base_name: base.to_string(),
+                total_bytes: bytes,
+                runs: exts
                     .iter()
                     .map(|e| LogicalRun::Alias {
                         phys_start_sector: e.target_data,
                         num_sectors: e.num_sectors,
                     })
-                    .collect();
-                dynamic_specs.push(OtaPartitionExtentSpec {
-                    base_name: pu.name.clone(),
-                    total_bytes: pu.new_info.size,
-                    runs,
-                });
-                whole_skipped_count += 1;
-                dyn_bytes_skipped_whole += pu.new_info.size;
-                bytes_skipped_whole += pu.new_info.size;
-                whole_aliased = true;
-            }
+                    .collect(),
+            });
+            carried_dynamic.push((base.to_string(), exts));
         }
-
-        if whole_aliased {
-            continue;
-        }
-
-        let padded_blocks = align_up(pu.new_info.size, LP_BLOCK_SIZE) / LP_BLOCK_SIZE;
-        let runs = if opts.enable_extent_aliasing {
-            if let Some(ap) = active_part {
-                update_prog(&|g| g.phase = OtaPhase::Indexing);
-                let exts = active_meta.partition_extents(ap);
-                let est_blocks = (exts.iter().map(|e| e.num_sectors).sum::<u64>() / LP_SECTORS_PER_BLOCK) as usize;
-                let mut part_index = ActiveBlockIndex::with_capacity(est_blocks);
-                part_index.index_super_extents_parallel(&mut super_ro, exts)?;
-                check_cancel()?;
-
-                update_prog(&|g| g.phase = OtaPhase::Planning);
-                let new_keys = stream_index_partition_blocks(&mut payload_file, &manifest, pu, cancel)?;
-                let (runs, _stats) =
-                    build_extent_alias_runs(&new_keys, &part_index, opts.min_alias_blocks);
-                runs
-            } else {
-                vec![LogicalRun::Allocate {
-                    num_sectors: padded_blocks * LP_SECTORS_PER_BLOCK,
-                }]
-            }
-        } else {
-            vec![LogicalRun::Allocate {
-                num_sectors: padded_blocks * LP_SECTORS_PER_BLOCK,
-            }]
-        };
-
-        dynamic_specs.push(OtaPartitionExtentSpec {
-            base_name: pu.name.clone(),
-            total_bytes: pu.new_info.size,
-            runs,
-        });
     }
+    let carried_dynamic_bytes: u64 = carried_dynamic
+        .iter()
+        .map(|(_, e)| e.iter().map(|x| x.num_sectors * LP_SECTOR_SIZE).sum::<u64>())
+        .sum();
 
     // Plan super extents for all dynamic partitions!
     let super_plan: OtaSuperPlan = plan_ota_inactive_slot(
@@ -1055,6 +1419,7 @@ pub fn run_ota(
     // Check raw A/B partitions (Layer 1 whole-partition skip against existing target slot!)
     let mut raw_to_write: Vec<(&PartitionUpdate, PathBuf)> = Vec::new();
     let mut raw_bytes_to_write = 0u64;
+    let mut raw_candidates: Vec<(&PartitionUpdate, PathBuf)> = Vec::new();
     for pu in &raw_updates {
         let target_dev = env.by_name_dir.join(format!("{}{target_suffix}", pu.name));
         let active_dev = env.by_name_dir.join(format!("{}{active_suffix}", pu.name));
@@ -1071,24 +1436,22 @@ pub fn run_ota(
             continue;
         };
 
-        let already_matches = if resume_done.contains(&pu.name) {
-            true
-        } else if let Some(exp) = pu.new_info.hash {
-            if slot_cache
-                .slot_map(target_slot)
-                .get(&pu.name)
-                .is_some_and(|c| c.size == pu.new_info.size && c.sha256 == exp)
-            {
-                true
-            } else {
-                read_raw_partition_hash(&dev, pu.new_info.size)
-                    .map(|h| h == exp)
-                    .unwrap_or(false)
-            }
-        } else {
-            false
-        };
+        raw_candidates.push((pu, dev));
+    }
 
+    // The target slot is never trusted from cache: recovery and fastboot write it behind pasang.
+    update_prog(&|g| g.current_partition = "raw-compare".into());
+    let raw_matches: Vec<bool> = parallel_map(&raw_candidates, io_workers(opts), |(pu, dev)| {
+        if resume_done.contains(&pu.name) {
+            return true;
+        }
+        pu.new_info
+            .hash
+            .is_some_and(|exp| read_raw_partition_hash(dev, pu.new_info.size).is_ok_and(|h| h == exp))
+    });
+    check_cancel()?;
+
+    for ((pu, dev), already_matches) in raw_candidates.into_iter().zip(raw_matches) {
         if already_matches {
             whole_skipped_count += 1;
             bytes_skipped_whole += pu.new_info.size;
@@ -1098,7 +1461,43 @@ pub fn run_ota(
         }
     }
 
-    let total_bytes_to_write = super_plan.total_bytes_to_write + raw_bytes_to_write;
+    // Partial payload: raw A/B partitions it does not include must match the active slot.
+    let mut raw_carry: Vec<(String, PathBuf, PathBuf, u64)> = Vec::new();
+    let mut raw_carried_hashes: Vec<(String, u64, [u8; 32])> = Vec::new();
+    if manifest.partial_update {
+        let mut pairs: Vec<(String, PathBuf, PathBuf, u64)> = Vec::new();
+        for name in &env.ab_partitions {
+            if manifest.partitions.iter().any(|p| &p.name == name) || active_has(name) {
+                continue;
+            }
+            let src = env.by_name_dir.join(format!("{name}{active_suffix}"));
+            let dst = env.by_name_dir.join(format!("{name}{target_suffix}"));
+            if !src.exists() || !dst.exists() {
+                continue;
+            }
+            let size = block_dev_size(&src)?;
+            if block_dev_size(&dst)? < size {
+                return Err(format!("{} smaller than {}", dst.display(), src.display()));
+            }
+            pairs.push((name.clone(), src, dst, size));
+        }
+        update_prog(&|g| g.current_partition = "carry-compare".into());
+        let hashes: Vec<Result<([u8; 32], [u8; 32]), String>> =
+            parallel_map(&pairs, io_workers(opts), |(_, src, dst, size)| {
+                Ok((read_raw_partition_hash(src, *size)?, read_raw_partition_hash(dst, *size)?))
+            });
+        check_cancel()?;
+        for (pair, h) in pairs.into_iter().zip(hashes) {
+            let (hs, hd) = h?;
+            raw_carried_hashes.push((pair.0.clone(), pair.3, hs));
+            if hs != hd {
+                raw_carry.push(pair);
+            }
+        }
+    }
+    let raw_carry_bytes: u64 = raw_carry.iter().map(|c| c.3).sum();
+
+    let total_bytes_to_write = super_plan.total_bytes_to_write + raw_bytes_to_write + raw_carry_bytes;
     let plan_summary = OtaPlanSummary {
         active_slot,
         target_slot,
@@ -1109,7 +1508,7 @@ pub fn run_ota(
         bytes_total_logical: total_logical,
         bytes_aliased: super_plan
             .total_bytes_aliased
-            .saturating_sub(dyn_bytes_skipped_whole),
+            .saturating_sub(dyn_bytes_skipped_whole + carried_dynamic_bytes),
         bytes_zeroed: super_plan.total_bytes_zeroed,
         bytes_skipped_whole,
         bytes_to_write: total_bytes_to_write,
@@ -1117,6 +1516,9 @@ pub fn run_ota(
         free_super_before: super_plan.free_bytes_before,
         free_super_after: super_plan.free_bytes_after,
         overlay_files_present: ovl_status.total_files,
+        partial_update: manifest.partial_update,
+        carried_partitions: carried_dynamic.len() + raw_carried_hashes.len(),
+        carried_bytes_copied: raw_carry_bytes,
     };
 
     update_prog(&|g| {
@@ -1162,6 +1564,11 @@ pub fn run_ota(
             g.current_partition = pp.target_name.clone();
             g.partitions_done = parts_done;
         });
+
+        if let Some((_, src)) = carried_dynamic.iter().find(|(b, _)| *b == pp.base_name) {
+            copy_carried_segments(&mut super_rw, src, &pp.write_segments, &mut total_written)?;
+            continue;
+        }
 
         let pu = dynamic_updates
             .iter()
@@ -1221,6 +1628,12 @@ pub fn run_ota(
             completed_partitions: completed_for_resume.clone(),
         };
         let _ = fs::write(&resume_path, rs.to_bytes());
+    }
+
+    for (name, src, dst, size) in &raw_carry {
+        check_cancel()?;
+        update_prog(&|g| g.current_partition = format!("carry {name}{target_suffix}"));
+        copy_raw_partition(src, dst, *size, &mut total_written)?;
     }
 
     // ====================================================================
@@ -1326,6 +1739,15 @@ pub fn run_ota(
         }
     }
 
+    if !opts.fast_verify {
+        for (name, _, dst, size) in &raw_carry {
+            let exp = raw_carried_hashes.iter().find(|h| &h.0 == name).map(|h| h.2);
+            if exp != Some(read_raw_partition_hash(dst, *size)?) {
+                return Err(format!("ABORT BEFORE COMMIT: carried {} readback mismatch", dst.display()));
+            }
+        }
+    }
+
     // ====================================================================
     // STEP 8: Atomic Commit (Primary + Backup LpMetadata -> Readback -> SetActiveSlot)
     // ====================================================================
@@ -1381,8 +1803,18 @@ pub fn run_ota(
     bootctl.set_active_boot_slot(target_slot)?;
 
     // Update SlotStateCache for target_slot & remove resume marker
+    let carried_cache: Vec<(String, CachedPartitionHash)> = carried_dynamic
+        .iter()
+        .filter_map(|(b, _)| Some((b.clone(), slot_cache.slot_map(active_slot).get(b)?.clone())))
+        .collect();
     let target_map = slot_cache.slot_map_mut(target_slot);
     target_map.clear();
+    for (b, c) in carried_cache {
+        target_map.insert(b, c);
+    }
+    for (name, size, sha256) in &raw_carried_hashes {
+        target_map.insert(name.clone(), CachedPartitionHash { size: *size, sha256: *sha256 });
+    }
     for pu in &manifest.partitions {
         if let Some(h) = pu.new_info.hash {
             target_map.insert(
@@ -1396,24 +1828,32 @@ pub fn run_ota(
     }
     let _ = slot_cache.save_atomic(&slot_cache_path);
     let _ = fs::remove_file(&resume_path);
+    let _ = fs::remove_file(&plan_cache_path);
 
     // ====================================================================
     // STEP 9: Optional Dev Auto-Clean OverlayFS
     // ====================================================================
-    let overlay_clean = if opts.clean_overlay {
+    let rewritten: Vec<String> = dynamic_updates.iter().map(|p| p.name.clone()).collect();
+    let clean_scope: Option<Option<&[String]>> = if opts.clean_overlay {
+        Some(None)
+    } else if preserve_scratch && manifest.partial_update && !opts.keep_overlay {
+        // The scratch kept for a partial payload still overlays the partitions it rewrote.
+        Some(Some(&rewritten))
+    } else {
+        None
+    };
+    let overlay_clean = clean_scope.map(|only| {
         update_prog(&|g| {
             g.phase = OtaPhase::CleaningOverlay;
             g.current_partition = "overlayfs".into();
         });
-        let rep = clean_overlays(&env.scratch_overlay_root, None);
+        let rep = clean_overlays(&env.scratch_overlay_root, only);
         update_prog(&|g| {
             g.overlay_cleaned_files = rep.removed_entries;
             g.overlay_freed_bytes = rep.freed_bytes;
         });
-        Some(rep)
-    } else {
-        None
-    };
+        rep
+    });
 
     let elapsed_ms = t0.elapsed().as_millis() as u64;
     update_prog(&|g| {
@@ -1439,7 +1879,7 @@ mod tests {
     use crate::lp::{
         build_synthetic_super_header, LpBlockDevice, LpGroup, LpPartition, LP_HEADER_SIZE_V1_2,
     };
-    use crate::payload::build_synthetic_payload;
+    use crate::payload::{build_synthetic_payload, build_synthetic_payload_ex};
     use std::sync::atomic::AtomicU32;
 
     struct MockBootControl {
@@ -1471,9 +1911,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_end_to_end_live_cow_ota_with_extent_aliasing_and_dev_overlay_clean() {
-        let dir = std::env::temp_dir().join(format!("pasang-e2e-{}", std::process::id()));
+    /// Synthetic live OTA from slot _b with a mounted scratch overlay; returns the apply result
+    /// and the partition names committed to the target slot's metadata.
+    fn run_synthetic_ota(
+        tag: &str,
+        keep_overlay: bool,
+        clean_overlay: bool,
+        dry_run_first: bool,
+    ) -> (OtaApplyResult, Vec<String>) {
+        let dir = std::env::temp_dir().join(format!("pasang-e2e-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let by_name = dir.join("by-name");
         let meta_dir = dir.join("metadata");
@@ -1483,7 +1929,11 @@ mod tests {
         fs::create_dir_all(&meta_dir).unwrap();
         fs::create_dir_all(ovl_dir.join("system_ext/upper/app")).unwrap();
         fs::write(ovl_dir.join("system_ext/upper/app/test.apk"), vec![7u8; 8192]).unwrap();
-        fs::write(&mounts_file, "overlay /system_ext overlay rw 0 0\n").unwrap();
+        fs::write(
+            &mounts_file,
+            "/dev/block/dm-9 /mnt/scratch f2fs rw 0 0\noverlay /system_ext overlay rw 0 0\n",
+        )
+        .unwrap();
 
         // Build synthetic 16 MiB super block file
         let super_size = 16 * 1024 * 1024u64;
@@ -1521,10 +1971,12 @@ mod tests {
             partitions: vec![
                 LpPartition { name: "vendor_b".into(), attributes: 3, first_extent_index: 0, num_extents: 1, group_index: 2 },
                 LpPartition { name: "odm_b".into(), attributes: 3, first_extent_index: 1, num_extents: 1, group_index: 2 },
+                LpPartition { name: "scratch".into(), attributes: 0, first_extent_index: 2, num_extents: 1, group_index: 0 },
             ],
             extents: vec![
                 LpExtent { num_sectors: 4096, target_type: LP_TARGET_TYPE_LINEAR, target_data: 2048, target_source: 0 },
                 LpExtent { num_sectors: 2048, target_type: LP_TARGET_TYPE_LINEAR, target_data: 6144, target_source: 0 },
+                LpExtent { num_sectors: 2048, target_type: LP_TARGET_TYPE_LINEAR, target_data: 8192, target_source: 0 },
             ],
             groups: groups.clone(),
             block_devices: vec![bd.clone()],
@@ -1575,20 +2027,50 @@ mod tests {
             proc_mounts_path: mounts_file,
             otacerts_path: dir.join("missing_certs.zip"),
             live_dm_occupied: vec![(2048, 6144), (6144, 8192)],
+            ab_partitions: Vec::new(),
         };
         let bootctl = MockBootControl {
             cur: 1,
             next: AtomicU32::new(1),
         };
         let opts = OtaOptions {
-            clean_overlay: true,
+            clean_overlay,
+            keep_overlay,
             allow_dev_key: true,
             enable_extent_aliasing: true,
             min_alias_blocks: 64,
             ..Default::default()
         };
         let prog = Mutex::new(OtaProgress::default());
+        let plan_cache = meta_dir.join("plan_cache.bin");
+        let dry = if dry_run_first {
+            let dry_opts = OtaOptions { dry_run: true, ..opts.clone() };
+            let d = run_ota(&env, &bootctl, &ota_path, &dry_opts, None, None).unwrap();
+            assert!(plan_cache.is_file(), "dry run left no plan cache");
+            Some(d)
+        } else {
+            None
+        };
         let res = run_ota(&env, &bootctl, &ota_path, &opts, Some(&prog), None).unwrap();
+        assert!(!plan_cache.exists(), "plan cache survived commit");
+        if let Some(d) = dry {
+            assert_eq!(d.plan.bytes_to_write, res.plan.bytes_to_write);
+            assert_eq!(d.plan.bytes_aliased, res.plan.bytes_aliased);
+            assert_eq!(d.plan.whole_skipped_partitions, res.plan.whole_skipped_partitions);
+        }
+
+        let super_now = fs::read(&super_path).unwrap();
+        let geom = parse_geometry(&super_now).unwrap();
+        let target_names: Vec<String> = parse_slot_metadata(&super_now, &geom, 0)
+            .unwrap()
+            .partitions
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        // Mounted scratch sectors must never be reused while the old slot is live.
+        for pp in &res_partitions_extents(&super_now, &geom) {
+            assert!(pp.1 <= 8192 || pp.0 >= 10240, "target extent {pp:?} overlaps live scratch");
+        }
 
         assert_eq!(res.committed_slot, 0);
         assert_eq!(bootctl.active_boot_slot().unwrap(), 0);
@@ -1598,11 +2080,15 @@ mod tests {
         assert_eq!(res.plan.bytes_aliased, 511 * 4096);
         assert_eq!(res.bytes_written, 4096 + 256 * 1024);
 
-        // Verify dev auto-clean overlay ran and wiped test.apk!
-        let ovl = res.overlay_clean.unwrap();
-        assert_eq!(ovl.removed_entries, 1);
-        assert_eq!(ovl.freed_bytes, 8192);
-        assert_eq!(ovl.cleaned_partitions, vec!["system_ext"]);
+        if clean_overlay {
+            let ovl = res.overlay_clean.as_ref().unwrap();
+            assert_eq!(ovl.removed_entries, 1);
+            assert_eq!(ovl.freed_bytes, 8192);
+            assert_eq!(ovl.cleaned_partitions, vec!["system_ext"]);
+        } else {
+            assert!(res.overlay_clean.is_none());
+            assert!(ovl_dir.join("system_ext/upper/app/test.apk").is_file());
+        }
 
         // Verify boot_a bytes match new_boot
         assert_eq!(fs::read(by_name.join("boot_a")).unwrap(), new_boot);
@@ -1611,5 +2097,233 @@ mod tests {
         assert!(meta_dir.join("last_good/super_meta.bin").is_file());
 
         let _ = fs::remove_dir_all(&dir);
+        (res, target_names)
+    }
+
+    fn res_partitions_extents(super_buf: &[u8], geom: &crate::lp::LpGeometry) -> Vec<(u64, u64)> {
+        let m = parse_slot_metadata(super_buf, geom, 0).unwrap();
+        m.partitions
+            .iter()
+            .filter(|p| p.name != "scratch")
+            .flat_map(|p| m.partition_extents(p).to_vec())
+            .filter(|e| e.target_type == LP_TARGET_TYPE_LINEAR)
+            .map(|e| (e.target_data, e.target_data + e.num_sectors))
+            .collect()
+    }
+
+    #[test]
+    fn test_end_to_end_live_cow_ota_drops_scratch_from_target_by_default() {
+        let (_, names) = run_synthetic_ota("drop", false, false, false);
+        assert!(names.iter().any(|n| n == "vendor_a"));
+        assert!(!names.iter().any(|n| n == "scratch"), "target slot kept scratch: {names:?}");
+    }
+
+    #[test]
+    fn test_end_to_end_live_cow_ota_keep_overlay_carries_scratch() {
+        let (_, names) = run_synthetic_ota("keep", true, false, false);
+        assert!(names.iter().any(|n| n == "scratch"), "scratch missing: {names:?}");
+    }
+
+    /// Kernel-style partial payload: only `vendor_dlkm` (dynamic) and `boot` (raw).
+    /// With `scratch`, a mounted scratch holds `system` and `vendor_dlkm` upperdirs.
+    fn run_partial_ota(tag: &str, vbmeta_flags: u32, scratch: bool) -> Result<(OtaApplyResult, PathBuf), String> {
+        let dir = std::env::temp_dir().join(format!("pasang-partial-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let by_name = dir.join("by-name");
+        fs::create_dir_all(&by_name).unwrap();
+        let ovl = dir.join("overlay");
+        if scratch {
+            fs::write(
+                dir.join("mounts"),
+                "/dev/block/mapper/scratch /mnt/scratch ext4 rw 0 0\noverlay /system overlay ro 0 0\n",
+            )
+            .unwrap();
+            for (part, file) in [("system", "lib64/libpushed.so"), ("vendor_dlkm", "lib/modules/old.ko")] {
+                let f = ovl.join(part).join("upper").join(file);
+                fs::create_dir_all(f.parent().unwrap()).unwrap();
+                fs::write(f, b"x").unwrap();
+            }
+        } else {
+            fs::write(dir.join("mounts"), "").unwrap();
+        }
+
+        let super_size = 16 * 1024 * 1024u64;
+        let bd = LpBlockDevice {
+            first_logical_sector: 2048,
+            alignment: 1024 * 1024,
+            alignment_offset: 0,
+            size: super_size,
+            partition_name: "super".into(),
+            flags: 0,
+        };
+        let groups = vec![
+            LpGroup { name: "default".into(), flags: 0, maximum_size: 0 },
+            LpGroup { name: "qti_dynamic_partitions_a".into(), flags: 1, maximum_size: 14 * 1024 * 1024 },
+            LpGroup { name: "qti_dynamic_partitions_b".into(), flags: 1, maximum_size: 14 * 1024 * 1024 },
+        ];
+        let lin = |n, at| LpExtent { num_sectors: n, target_type: LP_TARGET_TYPE_LINEAR, target_data: at, target_source: 0 };
+        let part = |name: &str, i| LpPartition { name: name.into(), attributes: 1, first_extent_index: i, num_extents: 1, group_index: 2 };
+        // system_b 2 MiB, vendor_dlkm_b 1 MiB, tiny_b 4 KiB (below the alias minimum -> copied)
+        let mut slot1 = LpMetadata {
+            major_version: 10,
+            minor_version: 2,
+            header_size: LP_HEADER_SIZE_V1_2 as u32,
+            flags: 0,
+            reserved: vec![0u8; 124],
+            partitions: vec![part("system_b", 0), part("vendor_dlkm_b", 1), part("tiny_b", 2)],
+            extents: vec![lin(4096, 2048), lin(2048, 6144), lin(8, 8192)],
+            groups: groups.clone(),
+            block_devices: vec![bd.clone()],
+        };
+        if scratch {
+            slot1.partitions.push(LpPartition { name: "scratch".into(), attributes: 0, first_extent_index: 3, num_extents: 1, group_index: 0 });
+            slot1.extents.push(lin(2048, 10240));
+        }
+        let slot0 = LpMetadata { partitions: vec![], extents: vec![], ..slot1.clone() };
+        let hdr = build_synthetic_super_header(super_size, &slot0, &slot1).unwrap();
+        let mut raw = vec![0u8; super_size as usize];
+        raw[..hdr.len()].copy_from_slice(&hdr);
+        let system: Vec<u8> = (0..2 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        raw[2048 * 512..2048 * 512 + system.len()].copy_from_slice(&system);
+        raw[6144 * 512..6144 * 512 + 1024 * 1024].fill(0x11);
+        raw[8192 * 512..8192 * 512 + 4096].fill(0x77);
+        let super_path = by_name.join("super");
+        fs::write(&super_path, &raw).unwrap();
+
+        fs::write(by_name.join("boot_a"), vec![0u8; 64 * 1024]).unwrap();
+        fs::write(by_name.join("boot_b"), vec![0x01u8; 64 * 1024]).unwrap();
+        fs::write(by_name.join("dtbo_a"), vec![0xAAu8; 32 * 1024]).unwrap();
+        fs::write(by_name.join("dtbo_b"), vec![0xBBu8; 32 * 1024]).unwrap();
+        fs::write(by_name.join("modem_a"), vec![0x5Cu8; 16 * 1024]).unwrap();
+        fs::write(by_name.join("modem_b"), vec![0x5Cu8; 16 * 1024]).unwrap();
+        let mut vbmeta = vec![0u8; 4096];
+        vbmeta[..4].copy_from_slice(b"AVB0");
+        vbmeta[120..124].copy_from_slice(&vbmeta_flags.to_be_bytes());
+        fs::write(by_name.join("vbmeta_a"), &vbmeta).unwrap();
+        fs::write(by_name.join("vbmeta_b"), &vbmeta).unwrap();
+
+        let new_dlkm = vec![0x22u8; 1024 * 1024];
+        let new_boot = vec![0x99u8; 64 * 1024];
+        let ota = build_synthetic_payload_ex(
+            4096,
+            &["vendor_dlkm"],
+            &[("vendor_dlkm", &new_dlkm), ("boot", &new_boot)],
+            true,
+        );
+        let ota_path = dir.join("kernel.bin");
+        fs::write(&ota_path, &ota).unwrap();
+
+        let env = OtaEnvironment {
+            super_device: super_path,
+            by_name_dir: by_name.clone(),
+            metadata_dir: dir.join("metadata"),
+            scratch_overlay_root: dir.join("overlay"),
+            proc_mounts_path: dir.join("mounts"),
+            otacerts_path: dir.join("missing_certs.zip"),
+            live_dm_occupied: vec![(2048, 8200)],
+            ab_partitions: ["boot", "dtbo", "modem", "vbmeta", "system", "vendor_dlkm", "tiny"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        };
+        let bootctl = MockBootControl { cur: 1, next: AtomicU32::new(1) };
+        let opts = OtaOptions { allow_dev_key: true, ..Default::default() };
+        let res = run_ota(&env, &bootctl, &ota_path, &opts, None, None)?;
+        Ok((res, dir))
+    }
+
+    #[test]
+    fn test_partial_payload_carries_untouched_partitions() {
+        let (res, dir) = run_partial_ota("carry", 3, false).unwrap();
+        let by_name = dir.join("by-name");
+        assert!(res.plan.partial_update);
+        assert_eq!(res.committed_slot, 0);
+        assert_eq!(fs::read(by_name.join("boot_a")).unwrap(), vec![0x99u8; 64 * 1024]);
+        // dtbo differed -> copied from the active slot; modem/vbmeta already matched.
+        assert_eq!(fs::read(by_name.join("dtbo_a")).unwrap(), vec![0xBBu8; 32 * 1024]);
+        assert_eq!(res.plan.carried_bytes_copied, 32 * 1024);
+        // system + tiny (dynamic) and dtbo, modem, vbmeta (raw) carried
+        assert_eq!(res.plan.carried_partitions, 5);
+
+        let sup = fs::read(by_name.join("super")).unwrap();
+        let geom = parse_geometry(&sup).unwrap();
+        let m = parse_slot_metadata(&sup, &geom, 0).unwrap();
+        let read_part = |name: &str| -> Vec<u8> {
+            let p = m.partitions.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{name} missing"));
+            let mut v = Vec::new();
+            for e in m.partition_extents(p) {
+                let o = (e.target_data * 512) as usize;
+                v.extend_from_slice(&sup[o..o + (e.num_sectors * 512) as usize]);
+            }
+            v
+        };
+        let system: Vec<u8> = (0..2 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        assert_eq!(read_part("system_a"), system);
+        assert_eq!(read_part("vendor_dlkm_a"), vec![0x22u8; 1024 * 1024]);
+        assert_eq!(read_part("tiny_a"), vec![0x77u8; 4096]);
+        // system_a aliases the active sectors; nothing of it was rewritten.
+        let sys_a = m.partitions.iter().find(|p| p.name == "system_a").unwrap();
+        assert_eq!(m.partition_extents(sys_a)[0].target_data, 2048);
+        let tiny_a = m.partitions.iter().find(|p| p.name == "tiny_a").unwrap();
+        assert_ne!(m.partition_extents(tiny_a)[0].target_data, 8192, "tiny run should be copied");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_partial_payload_keeps_scratch_and_clears_rewritten_upperdirs() {
+        let (res, dir) = run_partial_ota("scratch", 3, true).unwrap();
+        let sup = fs::read(dir.join("by-name/super")).unwrap();
+        let geom = parse_geometry(&sup).unwrap();
+        let m = parse_slot_metadata(&sup, &geom, 0).unwrap();
+        let scratch = m.partitions.iter().find(|p| p.name == "scratch").expect("target slot dropped scratch");
+        assert_eq!(m.partition_extents(scratch)[0].target_data, 10240, "scratch must keep its sectors");
+        let ovl = dir.join("overlay");
+        assert!(ovl.join("system/upper/lib64/libpushed.so").is_file(), "carried system lost its upperdir");
+        assert!(!ovl.join("vendor_dlkm/upper/lib").exists(), "rewritten vendor_dlkm kept old modules");
+        assert_eq!(res.overlay_clean.as_ref().unwrap().cleaned_partitions, ["vendor_dlkm"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_partial_payload_refuses_when_avb_enforced() {
+        let err = run_partial_ota("avb", 0, false).unwrap_err();
+        assert!(err.contains("vbmeta"), "{err}");
+    }
+
+    #[test]
+    fn test_end_to_end_apply_reuses_dry_run_plan() {
+        let (res, names) = run_synthetic_ota("reuse", false, false, true);
+        assert_eq!(res.bytes_written, 4096 + 256 * 1024);
+        assert!(names.iter().any(|n| n == "vendor_a"));
+    }
+
+    #[test]
+    fn test_plan_cache_rejects_other_key_and_corruption() {
+        let dir = std::env::temp_dir().join(format!("pasang-plancache-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("plan_cache.bin");
+        let specs = vec![OtaPartitionExtentSpec {
+            base_name: "vendor".into(),
+            total_bytes: 8192,
+            runs: vec![
+                LogicalRun::Alias { phys_start_sector: 2048, num_sectors: 8 },
+                LogicalRun::Allocate { num_sectors: 8 },
+            ],
+        }];
+        save_plan_cache(&p, &[1u8; 32], &specs, 0, 0).unwrap();
+        let got = load_plan_cache(&p, &[1u8; 32]).unwrap();
+        assert_eq!(got.0[0].runs, specs[0].runs);
+        assert!(load_plan_cache(&p, &[2u8; 32]).is_none());
+        let mut raw = fs::read(&p).unwrap();
+        raw[50] ^= 0xFF;
+        fs::write(&p, raw).unwrap();
+        assert!(load_plan_cache(&p, &[1u8; 32]).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_end_to_end_live_cow_ota_clean_overlay_wipes_live_upperdirs() {
+        let (_, names) = run_synthetic_ota("clean", false, true, false);
+        assert!(!names.iter().any(|n| n == "scratch"));
     }
 }

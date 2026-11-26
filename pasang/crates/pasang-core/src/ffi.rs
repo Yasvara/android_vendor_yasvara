@@ -495,7 +495,7 @@ fn run_cli_args(args: &[String]) -> i32 {
             for a in &args[1..] {
                 match a.as_str() {
                     "--clean-overlay" => opts.clean_overlay = true,
-                    "--keep-overlay" => opts.clean_overlay = false,
+                    "--keep-overlay" => opts.keep_overlay = true,
                     "--fast-verify" => opts.fast_verify = true,
                     "--allow-dev-key" => opts.allow_dev_key = true,
                     "--no-alias" => opts.enable_extent_aliasing = false,

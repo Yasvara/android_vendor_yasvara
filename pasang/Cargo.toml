@@ -2,7 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [workspace]
-members = ["crates/pasang-core"]
+members = [
+    "crates/pasang-core",
+    "crates/pulih-gfx",
+    "crates/pulih",
+    "crates/pulih-sim",
+]
 resolver = "2"
 
 [profile.release]

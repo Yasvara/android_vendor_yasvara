@@ -26,7 +26,7 @@ USAGE:
   pasang slot
   pasang inspect <ota.zip|payload.bin>
   pasang plan [--no-alias] [--allow-dev-key] <ota.zip|payload.bin>
-  pasang apply [--clean-overlay] [--fast-verify] [--allow-dev-key] [--no-alias] [--dry-run] <ota.zip|payload.bin>
+  pasang apply [--clean-overlay] [--keep-overlay] [--fast-verify] [--allow-dev-key] [--no-alias] [--dry-run] <ota.zip|payload.bin>
   pasang overlay status | clean
   pasang theme write <argb_hex> <oled_black:0|1> [locale]
 "#;
@@ -178,7 +178,7 @@ fn parse_ota_args(args: &[String], force_dry_run: bool) -> Result<(PathBuf, OtaO
     for a in args {
         match a.as_str() {
             "--clean-overlay" => opts.clean_overlay = true,
-            "--keep-overlay" => opts.clean_overlay = false,
+            "--keep-overlay" => opts.keep_overlay = true,
             "--fast-verify" => opts.fast_verify = true,
             "--allow-dev-key" => opts.allow_dev_key = true,
             "--no-alias" => opts.enable_extent_aliasing = false,

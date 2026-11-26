@@ -78,9 +78,8 @@ allow pasangd sysfs_dm:file r_file_perms;
 
 # Developer-only OverlayFS inspection & cleanup (`/mnt/scratch/overlay`).
 # Strictly excluded from production `user` builds to satisfy CTS neverallows.
-# Note: when `clean_overlay=true` during OTA, `pasangd` also drops the stale `scratch`
-# logical partition from the target slot's `LpMetadata` (while protecting live active
-# extents until reboot), guaranteeing a 100% clean overlay-free boot on the new slot.
+# OTAs leave `scratch` out of the target slot's LpMetadata unless `keep_overlay` is set,
+# so the new slot boots without old-build upperdirs; `clean_overlay` also wipes them live.
 userdebug_or_eng(`
     allow pasangd mnt_user_file:dir search;
     allow pasangd overlayfs_file:dir create_dir_perms;

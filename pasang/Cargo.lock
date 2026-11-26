@@ -5,3 +5,22 @@ version = 4
 [[package]]
 name = "pasang-core"
 version = "0.1.0"
+
+[[package]]
+name = "pulih"
+version = "1.0.0"
+dependencies = [
+ "pasang-core",
+ "pulih-gfx",
+]
+
+[[package]]
+name = "pulih-gfx"
+version = "1.0.0"
+
+[[package]]
+name = "pulih-sim"
+version = "1.0.0"
+dependencies = [
+ "pulih-gfx",
+]
