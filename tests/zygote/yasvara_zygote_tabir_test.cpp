@@ -23,18 +23,22 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#include <iterator>
 #include <string>
+#include <vector>
 
 namespace {
 
 using yasvara::tabir::CloseSharedFds;
 using yasvara::tabir::CloseSharedTexts;
 using yasvara::tabir::IgnoreWithSharedFds;
+using yasvara::tabir::ParseZygiskSet;
 using yasvara::tabir::ReuseOrShare;
 using yasvara::tabir::SharedText;
 using yasvara::tabir::ShareModuleText;
 using yasvara::tabir::RuntimeActive;
 using yasvara::tabir::ShouldUnmount;
+using yasvara::tabir::ZygiskSet;
 using yasvara::tabir::ZygiskModuleView;
 using yasvara::tabir::ZygiskShouldLoad;
 
@@ -217,6 +221,66 @@ TEST(ZygoteTabir, UnchangedModuleKeepsItsCopyChangedOneIsRecopied) {
     std::vector<SharedText> none;
     EXPECT_EQ(-1, ReuseOrShare("", none).fd);
     EXPECT_EQ(-1, ReuseOrShare("/nonexistent/arm64-v8a.so", none).fd);
+}
+
+// Written by yasvara_root_proto's encoder; its test asserts the same bytes.
+constexpr uint8_t kRustGolden[] = {
+#embed "testdata/zygisk_set_v1.bin"
+};
+
+std::vector<uint8_t> RustGolden() {
+    return {std::begin(kRustGolden), std::end(kRustGolden)};
+}
+
+TEST(ZygoteTabir, ParsesWhatTheRustEncoderWrites) {
+    const auto raw = RustGolden();
+    ASSERT_EQ(raw.size(), 288u);
+    ZygiskSet set;
+    ASSERT_TRUE(ParseZygiskSet(raw, set));
+    EXPECT_EQ(set.flags, yasvara::tabir::kZygiskEnabled | yasvara::tabir::kZygiskHasSystemServer);
+    EXPECT_EQ(set.denylist, (std::vector<uint32_t>{10112, 10234}));  // sorted, deduped
+    ASSERT_EQ(set.modules.size(), 2u);
+    const std::string dir = "/data/misc/yasvara_root/modules";
+    EXPECT_EQ(set.modules[0].lib64, dir + "/all_apps/zygisk/arm64-v8a.so");
+    EXPECT_EQ(set.modules[0].scope_mode, yasvara::tabir::kScopeAllNonDenylist);
+    EXPECT_TRUE(set.modules[0].scope_uids.empty());
+    EXPECT_EQ(set.modules[1].lib64, dir + "/scoped/zygisk/arm64-v8a.so");
+    EXPECT_EQ(set.modules[1].scope_mode, 1);
+    EXPECT_EQ(set.modules[1].scope_uids, (std::vector<uint32_t>{1000, 10300}));
+
+    // The parsed scope drives the load decision as Zygote uses it.
+    ZygiskModuleView views[2];
+    for (size_t i = 0; i < 2; ++i) {
+        const auto& m = set.modules[i];
+        views[i] = {!m.lib64.empty(), m.scope_mode, m.scope_uids.data(), m.scope_uids.size()};
+    }
+    const bool ss = (set.flags & yasvara::tabir::kZygiskHasSystemServer) != 0;
+    auto loads = [&](uid_t uid, bool system_server) {
+        return ZygiskShouldLoad(uid, system_server, false, true, false, false, ss,
+                                set.denylist.data(), set.denylist.size(), views, 2, nullptr);
+    };
+    EXPECT_TRUE(loads(10300, false));
+    EXPECT_FALSE(loads(1010234, false));  // denylisted in user 10 too
+    EXPECT_TRUE(loads(1000, true));       // the scoped module lists system_server
+}
+
+TEST(ZygoteTabir, TornOrForeignSetIsRefusedWhole) {
+    const auto raw = RustGolden();
+    ASSERT_FALSE(raw.empty());
+    ZygiskSet set;
+    set.flags = 0xdead;
+    for (size_t len = 0; len < raw.size(); ++len) {
+        const std::vector<uint8_t> torn(raw.begin(), raw.begin() + len);
+        ASSERT_FALSE(ParseZygiskSet(torn, set)) << "accepted a " << len << "-byte prefix";
+    }
+    auto bumped = raw;
+    bumped[4] = 2;  // version
+    EXPECT_FALSE(ParseZygiskSet(bumped, set));
+    auto huge = raw;
+    huge[12] = 0xff;  // denylist count far past the file
+    huge[13] = 0xff;
+    EXPECT_FALSE(ParseZygiskSet(huge, set));
+    EXPECT_EQ(set.flags, 0xdeadu) << "a refused set leaves the caller's table alone";
 }
 
 }  // namespace

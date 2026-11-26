@@ -373,4 +373,43 @@ mod tests {
         assert!(!dec.should_load_for_app(10333, true)); // out of scope -> zero dlopen!
         assert!(!dec.should_load_for_app(10500, true)); // denylist -> zero dlopen!
     }
+
+    /// Zygote parses these bytes in C++ (`yasvara::tabir::ParseZygiskSet`, tested against the
+    /// same file). A format change must update both; regenerate with
+    /// `AKAR_WRITE_GOLDEN=<path to the file>` and rerun.
+    #[test]
+    fn zygisk_set_matches_the_zygote_golden() {
+        let golden: &[u8] = include_bytes!("../../../tests/zygote/testdata/zygisk_set_v1.bin");
+        let dir = "/data/misc/yasvara_root/modules";
+        let set = ZygiskSet {
+            enabled: true,
+            safe_bypass: false,
+            has_system_server_modules: true,
+            denylist_uids: vec![10234, 10112, 10234],
+            modules: vec![
+                ZygiskModuleEntry {
+                    id: "all_apps".into(),
+                    mod_dir: format!("{dir}/all_apps"),
+                    lib64_path: format!("{dir}/all_apps/zygisk/arm64-v8a.so"),
+                    lib32_path: String::new(),
+                    scope_mode: SCOPE_ALL_NON_DENYLIST,
+                    scope_uids: vec![],
+                },
+                ZygiskModuleEntry {
+                    id: "scoped".into(),
+                    mod_dir: format!("{dir}/scoped"),
+                    lib64_path: format!("{dir}/scoped/zygisk/arm64-v8a.so"),
+                    lib32_path: String::new(),
+                    scope_mode: SCOPE_EXPLICIT_ONLY,
+                    scope_uids: vec![10300, 1000, 10300],
+                },
+            ],
+        };
+        let bytes = set.encode();
+        if let Some(path) = std::env::var_os("AKAR_WRITE_GOLDEN") {
+            std::fs::write(path, &bytes).unwrap();
+            return;
+        }
+        assert_eq!(bytes, golden);
+    }
 }
