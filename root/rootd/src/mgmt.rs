@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Privileged control-plane socket (`<data_dir>/run/mgmt.sock`) for `system_server`.
 //!
@@ -187,13 +187,7 @@ fn serve_one(conn: RawFd, data_dir: &Path, unprivileged_test: bool) -> (i32, Str
                 cmd.env(k, v);
             }
             cmd.env("MODDIR", mod_dir.display().to_string());
-            if !unprivileged_test {
-                let dd = data_dir.to_path_buf();
-                unsafe {
-                    use std::os::unix::process::CommandExt;
-                    cmd.pre_exec(move || compat_ns::enter_compat_adb_namespace(&dd, false));
-                }
-            }
+            cmd.env("KSU_MODULE", id);
             match cmd.output() {
                 Ok(out) => {
                     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Wire formats shared by `su` (client) and `yasvara_rootd` (daemon)
 //!
@@ -74,7 +74,9 @@ pub const RF_HAS_SHELL: u16 = 1 << 5;
 pub const RF_HAS_USER: u16 = 1 << 6;
 pub const RF_HAS_STDIO_FDS: u16 = 1 << 7;
 pub const RF_HAS_MNTNS_FD: u16 = 1 << 8;
-const RF_KNOWN: u16 = (1 << 9) - 1;
+/// The mount namespace fd names a target (`su -t PID`), not the caller's own view.
+pub const RF_TARGET_NS: u16 = 1 << 9;
+const RF_KNOWN: u16 = (1 << 10) - 1;
 
 // Frame kinds.
 pub const KIND_VERDICT: u8 = 1;

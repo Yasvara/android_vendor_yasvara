@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `yasvara_rootd` — the ROM's root daemon.
 //!
@@ -17,6 +17,7 @@
 
 mod bootguard;
 mod compat_ns;
+mod installer;
 mod keywatch;
 mod live;
 mod mgmt;
@@ -174,6 +175,11 @@ fn try_dispatch_oneshot() -> Option<i32> {
     if argv0 == "resetprop" {
         return Some(resetprop::cli_main(&raw_args[1..]));
     }
+    if argv0 == "magisk" {
+        return Some(magisk_shim(&raw_args[1..]));
+    }
+    // Reached through a /data/adb shim (`ksud`, `akarctl`): a tool, never the daemon.
+    let as_tool = matches!(argv0, "ksud" | "akarctl");
 
     let mut data_dir = PathBuf::from(DEFAULT_DATA_DIR);
     let mut meta_dir: Option<PathBuf> = None;
@@ -203,7 +209,17 @@ fn try_dispatch_oneshot() -> Option<i32> {
         }
     }
 
-    let first = rest.first().map(String::as_str)?;
+    let Some(first) = rest.first().map(String::as_str) else {
+        if as_tool {
+            eprintln!("usage: {argv0} module|resetprop|bootguard|zygisk|unmount ...");
+            return Some(2);
+        }
+        return None;
+    };
+    if as_tool && matches!(first, "-V" | "--version" | "-v" | "version") {
+        println!("{}", if first == "-V" { compat_ns::AKAR_VER_CODE.to_string() } else { format!("{}:YASVARA-AKAR", p::VERSION_NAME) });
+        return Some(0);
+    }
     match first {
         "--stage" => {
             let stage = rest.get(1).map(String::as_str).unwrap_or("");
@@ -265,7 +281,31 @@ fn try_dispatch_oneshot() -> Option<i32> {
                 _ => Some(2),
             }
         }
+        _ if as_tool => {
+            eprintln!("{argv0}: unknown command '{first}'");
+            Some(2)
+        }
         _ => None,
+    }
+}
+
+/// The parts of Magisk's CLI modules call. There is no Magisk tmpfs, so `--path` fails.
+fn magisk_shim(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("-v" | "--version") => {
+            println!("28.1-akar:MAGISK:R");
+            0
+        }
+        Some("-V") => {
+            println!("28100");
+            0
+        }
+        Some("resetprop") => resetprop::cli_main(&args[1..]),
+        Some("--path") => 1,
+        _ => {
+            eprintln!("magisk: not available on Akar (use ksud / akarctl)");
+            1
+        }
     }
 }
 
@@ -540,7 +580,7 @@ fn main() {
                 if n > 0 && si.ssi_signo == libc::SIGTERM as u32 {
                     // Stopped: a set left behind would keep projecting a client with no daemon
                     // behind it, and a socket file would read as running.
-                    let _ = std::fs::remove_file(&cfg.enrolled_path);
+                    let _ = sys::publish_set(&cfg.enrolled_path, None);
                     if let Some(p) = &bound {
                         let _ = std::fs::remove_file(p);
                     }
@@ -598,7 +638,7 @@ fn sync_enrolled(cfg: &Config, policy: &mut Policy, written: &mut u64) {
     if policy.generation == *written {
         return;
     }
-    match sys::replace_file(&cfg.enrolled_path, &yasvara_root_proto::grants::enrolled_set(&policy.grants)) {
+    match sys::publish_set(&cfg.enrolled_path, Some(&yasvara_root_proto::grants::enrolled_set(&policy.grants))) {
         Ok(()) => *written = policy.generation,
         Err(e) => eprintln!("yasvara_rootd: {}: {e}", cfg.enrolled_path.display()),
     }

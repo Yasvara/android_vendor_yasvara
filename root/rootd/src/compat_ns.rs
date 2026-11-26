@@ -1,166 +1,212 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Private `/data/adb` compatibility mount namespace.
+//! The Magisk/KSU `/data/adb` layout, without a mount.
 //!
-//! Real module storage lives exclusively under `/data/misc/yasvara_root/` so `/data/adb`
-//! stays completely clean in the global/app namespace (preserving SELinux zero-leak and
-//! eliminating `/data/adb/{modules,ksu,magisk}` forensic signals).
-//!
-//! Whenever `yasvara_rootd` runs a module installer (`customize.sh`), boot script
-//! (`post-fs-data.sh`, `service.sh`, `post-mount.sh`, `boot-completed.sh`), `action.sh`,
-//! or metamodule hook, it unshares a private mount namespace where `/` remains `MS_SHARED`
-//! (so system mounts propagate globally) while `/data/adb` is `MS_PRIVATE` and bind-mounted
-//! from `/data/misc/yasvara_root/adb_compat`.
+//! Module storage lives under `/data/misc/yasvara_root/`. The real `/data/adb` (stock,
+//! `0700 root:root`, `adb_data_file`, no app may search it) gets symlinks into it, so scripts
+//! that hardcode `/data/adb/...` work in every mount namespace, including init's
+//! (`nsenter -t1 -m`), and the mount table never changes. Entries that already exist as real
+//! files or directories belong to someone else and are left alone.
 
-use std::ffi::CString;
 use std::fs;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use crate::sys;
-
-pub const COMPAT_ADB_MOUNTPOINT: &str = "/data/adb";
+pub const ADB_DIR: &str = "/data/adb";
 pub const REAL_ROOTD_BIN: &str = "/system/xbin/yasvara_rootd";
 
-fn cpath(p: &Path) -> io::Result<CString> {
-    CString::new(p.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "nul in path"))
+/// Directories of the compat tree, relative to `<data_dir>/adb_compat`.
+const COMPAT_DIRS: [&str; 8] = [
+    "post-fs-data.d",
+    "service.d",
+    "post-mount.d",
+    "boot-completed.d",
+    "ksu/bin",
+    "ksu/module_configs",
+    "magisk",
+    "initrc.d",
+];
+
+/// Tools reachable as `/data/adb/ksu/bin/<tool>`; the daemon dispatches on argv0.
+const TOOLS: [&str; 4] = ["ksud", "resetprop", "magisk", "akarctl"];
+
+/// One `/data/adb/<name>` link and where it points.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Link {
+    pub name: &'static str,
+    pub target: PathBuf,
 }
 
-fn bind_mount(src: &Path, dst: &Path) -> io::Result<()> {
-    let csrc = cpath(src)?;
-    let cdst = cpath(dst)?;
-    sys::cvt(unsafe {
-        libc::mount(
-            csrc.as_ptr(),
-            cdst.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND | libc::MS_REC,
-            std::ptr::null(),
-        )
-    })?;
-    Ok(())
+/// What `/data/adb` should hold.
+pub fn plan_links(data_dir: &Path, rootd_bin: &Path, metamodule: Option<&Path>) -> Vec<Link> {
+    let compat = data_dir.join("adb_compat");
+    let mut v = vec![
+        Link { name: "modules", target: data_dir.join("modules") },
+        Link { name: "modules_update", target: data_dir.join("modules_update") },
+        Link { name: "ksu", target: compat.join("ksu") },
+        Link { name: "magisk", target: compat.join("magisk") },
+        Link { name: "ksud", target: rootd_bin.to_path_buf() },
+    ];
+    for d in ["post-fs-data.d", "service.d", "post-mount.d", "boot-completed.d", "initrc.d"] {
+        v.push(Link { name: d, target: compat.join(d) });
+    }
+    if let Some(m) = metamodule {
+        v.push(Link { name: "metamodule", target: m.to_path_buf() });
+    }
+    v
 }
 
-/// Ensures `<data_dir>/adb_compat` has all standard Magisk/KSU layout directories and
-/// tool shims (`ksud`, `resetprop`, `magisk`, `akarctl`) pointing to `yasvara_rootd`.
+/// Ensures the compat tree and the tool links inside it.
 pub fn prepare_compat_tree(data_dir: &Path, rootd_bin: &Path) -> io::Result<PathBuf> {
     let compat = data_dir.join("adb_compat");
-    for sub in [
-        "modules",
-        "modules_update",
-        "post-fs-data.d",
-        "service.d",
-        "post-mount.d",
-        "boot-completed.d",
-        "ksu/bin",
-        "ksu/modules",
-    ] {
+    for sub in COMPAT_DIRS {
         let d = compat.join(sub);
         fs::create_dir_all(&d)?;
         let _ = fs::set_permissions(&d, fs::Permissions::from_mode(0o755));
     }
-    let bin_dir = compat.join("ksu/bin");
-    for tool in ["ksud", "resetprop", "magisk", "akarctl"] {
-        let link = bin_dir.join(tool);
-        let _ = fs::remove_file(&link);
-        let _ = symlink(rootd_bin, &link);
+    for tool in TOOLS {
+        replace_link(&compat.join("ksu/bin").join(tool), rootd_bin)?;
     }
+    replace_link(&compat.join("magisk/magisk"), rootd_bin)?;
     Ok(compat)
 }
 
-/// Enters a private mount namespace where `/data/adb` projects `<data_dir>/adb_compat`
-/// and `<data_dir>/modules` + `<data_dir>/modules_update`, while `/` stays `MS_SHARED`
-/// so module mounts propagate to the global mount namespace.
-pub fn enter_compat_adb_namespace(data_dir: &Path, unprivileged_test: bool) -> io::Result<()> {
-    if unprivileged_test {
+fn replace_link(link: &Path, target: &Path) -> io::Result<()> {
+    if fs::read_link(link).ok().as_deref() == Some(target) {
         return Ok(());
     }
-    let compat = prepare_compat_tree(data_dir, Path::new(REAL_ROOTD_BIN))?;
-    sys::cvt(unsafe { libc::unshare(libc::CLONE_NEWNS) })?;
-
-    // Keep `/` shared so system/vendor/product mounts propagate to PID 1 / Zygote.
-    let root_c = CString::new("/").unwrap();
-    let _ = unsafe {
-        libc::mount(
-            std::ptr::null(),
-            root_c.as_ptr(),
-            std::ptr::null(),
-            libc::MS_REC | libc::MS_SHARED,
-            std::ptr::null(),
-        )
-    };
-
-    let adb_dir = Path::new(COMPAT_ADB_MOUNTPOINT);
-    if !adb_dir.exists() {
-        let _ = fs::create_dir_all(adb_dir);
-    }
-    let adb_c = cpath(adb_dir)?;
-    // Bind /data/adb onto itself first so we can mark it MS_PRIVATE cleanly even if it wasn't a mountpoint.
-    let _ = unsafe {
-        libc::mount(
-            adb_c.as_ptr(),
-            adb_c.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND,
-            std::ptr::null(),
-        )
-    };
-    let _ = unsafe {
-        libc::mount(
-            std::ptr::null(),
-            adb_c.as_ptr(),
-            std::ptr::null(),
-            libc::MS_PRIVATE,
-            std::ptr::null(),
-        )
-    };
-
-    // Preserve real /data/adb/adb_keys if present on the device.
-    let real_keys = adb_dir.join("adb_keys");
-    let compat_keys = compat.join("adb_keys");
-    if real_keys.is_file() {
-        let _ = fs::copy(&real_keys, &compat_keys);
-    }
-
-    bind_mount(&compat, adb_dir)?;
-    let _ = bind_mount(&data_dir.join("modules"), &adb_dir.join("modules"));
-    let _ = bind_mount(&data_dir.join("modules_update"), &adb_dir.join("modules_update"));
-    Ok(())
+    let _ = fs::remove_file(link);
+    symlink(target, link)
 }
 
-/// Standard environment variables exposed to Magisk/KSU/BakaSU compatible scripts.
+/// Creates or repoints `/data/adb/<name>` links. Returns the names skipped because a real
+/// file or directory is there. A stale `metamodule` link is removed when none is active.
+pub fn sync_adb_links(adb_dir: &Path, links: &[Link]) -> io::Result<Vec<&'static str>> {
+    fs::create_dir_all(adb_dir)?;
+    let mut skipped = Vec::new();
+    for l in links {
+        let path = adb_dir.join(l.name);
+        match fs::symlink_metadata(&path) {
+            Ok(m) if m.file_type().is_symlink() => replace_link(&path, &l.target)?,
+            Ok(_) => skipped.push(l.name),
+            Err(_) => symlink(&l.target, &path)?,
+        }
+    }
+    let meta = adb_dir.join("metamodule");
+    if !links.iter().any(|l| l.name == "metamodule")
+        && fs::symlink_metadata(&meta).is_ok_and(|m| m.file_type().is_symlink())
+    {
+        let _ = fs::remove_file(meta);
+    }
+    Ok(skipped)
+}
+
+/// Environment for every module script (installer, stages, `action.sh`, WebUI exec).
 pub fn compat_env(data_dir: &Path, unprivileged_test: bool) -> Vec<(String, String)> {
-    let adb_root = if unprivileged_test {
-        data_dir.join("adb_compat")
-    } else {
-        PathBuf::from(COMPAT_ADB_MOUNTPOINT)
-    };
+    let adb_root = if unprivileged_test { data_dir.join("adb_compat") } else { PathBuf::from(ADB_DIR) };
     let ksu_bin = adb_root.join("ksu/bin");
     let path = if unprivileged_test {
         format!("{}:/usr/bin:/bin:/system/bin", ksu_bin.display())
     } else {
         format!(
-            "{}:/product/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:/system_ext/bin:/system/bin:/system/xbin:/vendor/bin",
+            "/product/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:/system_ext/bin:/system/bin:/system/xbin:/vendor/bin:{}",
             ksu_bin.display()
         )
     };
-    vec![
+    let zygisk = crate::modules::is_zygisk_enabled(data_dir);
+    let mut v: Vec<(String, String)> = vec![
         ("PATH".into(), path),
         ("YASVARA_AKAR".into(), "true".into()),
         ("YASVARA_AKAR_VER".into(), yasvara_root_proto::VERSION_NAME.into()),
-        ("YASVARA_AKAR_VER_CODE".into(), "30100".into()),
-        // Compatibility exports expected by standard Magisk/KSU modules:
+        ("YASVARA_AKAR_VER_CODE".into(), AKAR_VER_CODE.into()),
         ("KSU".into(), "true".into()),
         ("KSU_VER".into(), "v3.1.0-akar".into()),
-        ("KSU_VER_CODE".into(), "30100".into()),
-        ("KSU_KERNEL_VER_CODE".into(), "30100".into()),
+        ("KSU_VER_CODE".into(), AKAR_VER_CODE.into()),
+        ("KSU_KERNEL_VER_CODE".into(), AKAR_VER_CODE.into()),
+        ("KSU_HAS_HOT_INSTALL".into(), "true".into()),
         ("MAGISK_VER".into(), "28.1-akar".into()),
         ("MAGISK_VER_CODE".into(), "28100".into()),
         ("ASH_STANDALONE".into(), "1".into()),
         ("AKAR_DATA_DIR".into(), data_dir.display().to_string()),
-    ]
+    ];
+    if zygisk {
+        v.push(("ZYGISK_ENABLED".into(), "1".into()));
+    }
+    v
+}
+
+pub const AKAR_VER_CODE: &str = "30100";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("akar-adb-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn links_are_created_repointed_and_foreign_entries_kept() {
+        let t = tmp("links");
+        let data = t.join("data");
+        let adb = t.join("adb");
+        fs::create_dir_all(adb.join("magisk")).unwrap(); // someone else's real dir
+        fs::write(adb.join("adb_keys"), b"k").unwrap();
+        symlink("/nowhere", adb.join("modules")).unwrap(); // stale link of ours
+        let links = plan_links(&data, Path::new("/system/xbin/yasvara_rootd"), None);
+        let skipped = sync_adb_links(&adb, &links).unwrap();
+        assert_eq!(skipped, vec!["magisk"]);
+        assert_eq!(fs::read_link(adb.join("modules")).unwrap(), data.join("modules"));
+        assert_eq!(fs::read_link(adb.join("ksud")).unwrap(), PathBuf::from("/system/xbin/yasvara_rootd"));
+        assert_eq!(fs::read(adb.join("adb_keys")).unwrap(), b"k", "unrelated files untouched");
+        // Idempotent.
+        assert!(sync_adb_links(&adb, &links).unwrap() == vec!["magisk"]);
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn metamodule_link_follows_the_active_one() {
+        let t = tmp("meta");
+        let data = t.join("data");
+        let adb = t.join("adb");
+        let m = data.join("modules/meta_overlay");
+        let with = plan_links(&data, Path::new("/r"), Some(&m));
+        sync_adb_links(&adb, &with).unwrap();
+        assert_eq!(fs::read_link(adb.join("metamodule")).unwrap(), m);
+        let without = plan_links(&data, Path::new("/r"), None);
+        sync_adb_links(&adb, &without).unwrap();
+        assert!(fs::symlink_metadata(adb.join("metamodule")).is_err());
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn compat_tree_has_tool_links() {
+        let t = tmp("tree");
+        let compat = prepare_compat_tree(&t, Path::new("/r")).unwrap();
+        for tool in TOOLS {
+            assert_eq!(fs::read_link(compat.join("ksu/bin").join(tool)).unwrap(), PathBuf::from("/r"));
+        }
+        assert_eq!(fs::read_link(compat.join("magisk/magisk")).unwrap(), PathBuf::from("/r"));
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn env_exports_the_module_contract() {
+        let t = tmp("env");
+        let env = compat_env(&t, true);
+        let get = |k: &str| env.iter().find(|(ek, _)| ek == k).map(|(_, v)| v.clone());
+        assert_eq!(get("KSU").as_deref(), Some("true"));
+        assert_eq!(get("KSU_HAS_HOT_INSTALL").as_deref(), Some("true"));
+        assert_eq!(get("ZYGISK_ENABLED"), None, "Zygisk off");
+        fs::write(t.join("modules.conf"), "enabled=1\n").unwrap();
+        fs::write(t.join("zygisk.conf"), "enabled=1\n").unwrap();
+        let env = compat_env(&t, true);
+        assert!(env.iter().any(|(k, v)| k == "ZYGISK_ENABLED" && v == "1"));
+        let _ = fs::remove_dir_all(&t);
+    }
 }

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `grants.v1`: the policy file YasvaraRootService writes and `yasvara_rootd` trusts
 //!

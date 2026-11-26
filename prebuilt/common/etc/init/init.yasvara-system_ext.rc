@@ -1,6 +1,11 @@
 # Yasvara core functionality
 on init
     export TERMINFO /system_ext/etc/terminfo
+    # App-view hide filter switches: rootd owns akar, system_server (Kait) owns kait.
+    chown root root /sys/kernel/yasvara_hide/akar
+    chown system system /sys/kernel/yasvara_hide/kait
+    chmod 0600 /sys/kernel/yasvara_hide/akar
+    chmod 0600 /sys/kernel/yasvara_hide/kait
 
 # bugreport is triggered by holding down volume down, volume up and power
 service yasvara-bugreport /system/bin/dumpstate -d -p -z

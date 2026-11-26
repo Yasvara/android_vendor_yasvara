@@ -89,6 +89,11 @@ out=$("$SU" -s /bin/sh -c 'echo hello; echo err >&2; exit 7' 2>&1 </dev/null); r
 expect "enrolled runs the command (stdout)" "hello" "$out"
 expect "enrolled runs the command (stderr)" "err" "$out"
 [ $rc = 7 ] && ok "exit code is the command's" || bad "exit code $rc, wanted 7"
+out=$("$SU" -s /bin/sh 0 printf '%s|' a 'b c' 2>&1 </dev/null); rc=$?
+expect "AOSP form: su 0 CMD ARGS runs CMD directly" "a|b c|" "$out"
+[ $rc = 0 ] && ok "AOSP form exit code" || bad "AOSP form exit code $rc"
+out=$("$SU" -s /bin/sh -c'printf "x\n"' 2>/dev/null </dev/null | od -An -tx1 | tr -d ' \n')
+[ "$out" = "780a" ] && ok "attached -cCMD, byte-exact output (no CRLF)" || bad "attached -cCMD output bytes '$out'"
 out=$(timeout 5 "$SU" -c "$BIG" 0 "$BIG" "$BIG" 2>&1 </dev/null)
 expect "oversized request: the session's reason, not a broken pipe" "bad request" "$out"
 

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Compact binary sets published by `yasvara_rootd` and read by Zygote / Native Zygisk.
 //!
@@ -95,7 +95,8 @@ pub struct UnmountSet {
 impl Default for UnmountSet {
     fn default() -> Self {
         Self {
-            default_unmount_non_root: true,
+            // Magisk semantics: only DenyList (Tabir-protected) apps and forced uids.
+            default_unmount_non_root: false,
             force_unmount_uids: Vec::new(),
             exempt_uids: Vec::new(),
         }

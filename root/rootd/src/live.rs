@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Sessions the main loop runs itself: no supervisor process, the shell spawned straight from the
 //! daemon. All of their state is a connection in the epoll set and a child the SIGCHLD loop

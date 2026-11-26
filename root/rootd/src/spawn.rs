@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Starting a shell without copying the daemon: clone(CLONE_VM | CLONE_VFORK) on a stack of its
 //! own, so the cost does not grow with the daemon's mappings, and the SELinux domain set for exec

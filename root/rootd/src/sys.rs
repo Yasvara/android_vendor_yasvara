@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Thin, audited wrappers over the syscalls rootd needs. Every `unsafe` block in the daemon
 //! lives in this file or in `session.rs`' child setup, so there is one place to review.
@@ -347,6 +347,67 @@ pub fn drain_watch_any(fd: RawFd) -> Vec<String> {
 #[allow(dead_code)]
 pub fn drain_watch(fd: RawFd, name: &str) -> bool {
     drain_watch_any(fd).iter().any(|s| s == name)
+}
+
+/// Bumped after every change to a set file Zygote reads. Zygote keeps the `prop_info` and
+/// compares its serial on each fork: one load, no syscall, files re-read only on change.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub const ZYGOTE_GEN_PROP: &[u8] = b"sys.yasvara.akar.gen\0";
+
+#[cfg(test)]
+pub static GEN_BUMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn bump_zygote_gen() {
+    #[cfg(test)]
+    GEN_BUMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(target_os = "android")]
+    {
+        extern "C" {
+            fn __system_property_set(name: *const libc::c_char, value: *const libc::c_char) -> libc::c_int;
+        }
+        let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+        unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
+        let v = format!("{}{:09}\0", ts.tv_sec, ts.tv_nsec);
+        unsafe {
+            __system_property_set(ZYGOTE_GEN_PROP.as_ptr() as *const libc::c_char, v.as_ptr() as *const libc::c_char)
+        };
+    }
+}
+
+/// Writes (`Some`) or removes (`None`) a Zygote set file, then bumps the generation.
+pub fn publish_set(path: &Path, bytes: Option<&[u8]>) -> io::Result<()> {
+    let r = match bytes {
+        Some(b) => replace_file(path, b),
+        None => match std::fs::remove_file(path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        },
+    };
+    bump_zygote_gen();
+    r
+}
+
+pub const HIDE_MOUNTS: u32 = 1;
+pub const HIDE_MAPS: u32 = 2;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const HIDE_SWITCH: &str = "/sys/kernel/yasvara_hide/akar";
+
+static HIDE_WRITTEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Sets Akar's source of the kernel app-view hide filters (`HIDE_*` bits). The kernel
+/// starts each boot at 0; one write per change per process.
+pub fn write_hide_switch(bits: u32) {
+    use std::sync::atomic::Ordering;
+    if HIDE_WRITTEN.swap(bits, Ordering::Relaxed) == bits {
+        return;
+    }
+    #[cfg(target_os = "android")]
+    if let Err(e) = std::fs::write(HIDE_SWITCH, format!("{bits}\n")) {
+        // Kernel without the switch: its filters are unconditional.
+        if e.kind() != io::ErrorKind::NotFound {
+            eprintln!("yasvara_rootd: {HIDE_SWITCH}: {e}");
+        }
+    }
 }
 
 /// Atomically replaces `path` with `bytes` (mode 0644, readable by zygote): write to

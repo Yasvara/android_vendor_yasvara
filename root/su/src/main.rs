@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `su` — client of the ROM's root daemon.
 //!
@@ -27,94 +27,233 @@ use std::os::unix::io::RawFd;
 
 use yasvara_root_proto::{self as p, Frame, Reason, Request};
 
+#[derive(Debug, Default, PartialEq)]
 struct Opts {
     cmd: Option<Vec<u8>>,
     shell: Option<Vec<u8>>,
     login: bool,
     preserve: bool,
     master: bool,
+    force_pty: bool,
     tier: u8,
     user: Option<u32>,
+    target_pid: Option<i32>,
+    context: Option<Vec<u8>>,
     extra: Vec<Vec<u8>>,
 }
 
-const USAGE: &str = "Usage: su [options] [-] [user [argument...]]\n\
+#[derive(Debug, PartialEq)]
+enum Action {
+    Run(Opts),
+    Print(&'static str),
+    Version,
+    VersionCode,
+}
+
+const USAGE: &str = "Usage: su [options] [-] [user [command [argument...]]]\n\
 Options:\n  \
 -c, --command COMMAND       pass COMMAND to the invoked shell\n  \
 -s, --shell SHELL           use SHELL instead of /system/bin/sh\n  \
 -, -l, --login              pretend the shell to be a login shell\n  \
 -p, -m, --preserve-environment\n                              do not change the environment\n  \
 -M, -mm, --mount-master     run in the global mount namespace\n  \
--t, --tier shell|root       request a lower tier than the grant allows\n  \
+-i, --interactive           force a pseudo-terminal when using -c\n  \
+-t, --target PID            run in the mount namespace of PID\n  \
+-Z, --context CONTEXT       run in SELinux CONTEXT\n  \
+-g, -G GROUP                accepted for root only\n  \
+    --tier shell|root       request a lower tier than the grant allows\n  \
 -v, --version               print the version string\n  \
 -V                          print the version code\n  \
--h, --help                  this help\n";
+-h, --help                  this help\n\
+A command after the user runs directly, as with AOSP su: `su 0 id`, `su root ls -l /`.\n";
 
 fn die(msg: &str) -> ! {
     eprintln!("su: {msg}");
     std::process::exit(1)
 }
 
-fn parse_args() -> Opts {
-    let mut o = Opts { cmd: None, shell: None, login: false, preserve: false, master: false, tier: p::TIER_DEFAULT, user: None, extra: Vec::new() };
-    let mut args = std::env::args_os().skip(1).map(OsString::into_vec);
+fn parse_tier(v: &[u8]) -> Result<u8, String> {
+    match v {
+        b"shell" => Ok(p::TIER_SHELL),
+        b"root" => Ok(p::TIER_ROOT),
+        _ => Err("--tier needs shell or root".into()),
+    }
+}
+
+fn root_group_only(v: &[u8]) -> Result<(), String> {
+    match v {
+        b"0" | b"root" => Ok(()),
+        _ => Err(format!("group {} is not supported, only root", String::from_utf8_lossy(v))),
+    }
+}
+
+/// Quotes one word for `sh`.
+fn sh_quote(w: &[u8]) -> Vec<u8> {
+    let mut o = vec![b'\''];
+    for &c in w {
+        if c == b'\'' {
+            o.extend_from_slice(b"'\\''");
+        } else {
+            o.push(c);
+        }
+    }
+    o.push(b'\'');
+    o
+}
+
+/// Magisk/KSU option set plus AOSP's `su USER COMMAND…`. Everything after the first word
+/// following the user is the command's own argv, never su options.
+fn parse<I: IntoIterator<Item = Vec<u8>>>(args: I) -> Result<Action, String> {
+    let mut o = Opts { tier: p::TIER_DEFAULT, ..Opts::default() };
+    let mut args = args.into_iter();
     let mut positional_only = false;
     let mut have_user = false;
+    let mut command_argv: Vec<Vec<u8>> = Vec::new();
     while let Some(a) = args.next() {
-        let s = String::from_utf8_lossy(&a).to_string();
-        if positional_only || !s.starts_with('-') {
-            // The first positional is the user, the rest are shell arguments.
+        if !command_argv.is_empty() {
+            command_argv.push(a);
+            continue;
+        }
+        if positional_only || a.first() != Some(&b'-') {
             if !have_user {
                 have_user = true;
-                match p::parse_user(&s) {
-                    Some(u) => o.user = Some(u),
-                    None => die(&format!("unknown user: {s}")),
-                }
+                let s = String::from_utf8_lossy(&a);
+                o.user = Some(p::parse_user(&s).ok_or_else(|| format!("unknown user: {s}"))?);
             } else {
-                o.extra.push(a);
+                command_argv.push(a);
             }
             continue;
         }
-        match s.as_str() {
-            "-" | "-l" | "--login" => o.login = true,
-            "-c" | "--command" => o.cmd = Some(args.next().unwrap_or_else(|| die("option -c needs a command"))),
-            "-s" | "--shell" => o.shell = Some(args.next().unwrap_or_else(|| die("option -s needs a shell"))),
-            "-p" | "-m" | "--preserve-environment" => o.preserve = true,
-            "-M" | "-mm" | "--mount-master" => o.master = true,
-            "-t" | "--tier" => {
-                o.tier = match args.next().as_deref() {
-                    Some(b"shell") => p::TIER_SHELL,
-                    Some(b"root") => p::TIER_ROOT,
-                    _ => die("option -t needs shell or root"),
-                }
+        let mut value = |name: &str, inline: Option<&[u8]>| -> Result<Vec<u8>, String> {
+            match inline {
+                Some(v) if !v.is_empty() => Ok(v.to_vec()),
+                _ => args.next().ok_or_else(|| format!("option {name} needs a value")),
             }
-            "-v" | "--version" => {
-                println!("{}:YASVARA", p::VERSION_NAME);
-                std::process::exit(0)
+        };
+        if let Some(long) = a.strip_prefix(b"--") {
+            if long.is_empty() {
+                positional_only = true;
+                continue;
             }
-            "-V" => {
-                println!("{}", p::VERSION_CODE);
-                std::process::exit(0)
+            let (name, inline) = match long.iter().position(|&c| c == b'=') {
+                Some(i) => (&long[..i], Some(&long[i + 1..])),
+                None => (long, None),
+            };
+            match name {
+                b"command" => o.cmd = Some(value("--command", inline)?),
+                b"shell" => o.shell = Some(value("--shell", inline)?),
+                b"login" => o.login = true,
+                b"preserve-environment" => o.preserve = true,
+                b"mount-master" => o.master = true,
+                b"interactive" => o.force_pty = true,
+                b"target" => o.target_pid = Some(parse_pid(&value("--target", inline)?)?),
+                b"context" => o.context = Some(value("--context", inline)?),
+                b"group" | b"supp-group" => root_group_only(&value("--group", inline)?)?,
+                b"tier" => o.tier = parse_tier(&value("--tier", inline)?)?,
+                b"version" => return Ok(Action::Version),
+                b"help" => return Ok(Action::Print(USAGE)),
+                _ => return Err(format!("invalid option: {}\n{USAGE}", String::from_utf8_lossy(&a))),
             }
-            "-h" | "--help" => {
-                print!("{USAGE}");
-                std::process::exit(0)
-            }
-            "--" => positional_only = true,
-            // A cluster of the value-less short options, e.g. -lp.
-            c if c.len() > 2 && !c.starts_with("--") && c[1..].chars().all(|ch| matches!(ch, 'l' | 'p' | 'm' | 'M')) => {
-                for ch in c[1..].chars() {
+            continue;
+        }
+        if a == b"-" {
+            o.login = true;
+            continue;
+        }
+        if a == b"-mm" {
+            o.master = true;
+            continue;
+        }
+        // A cluster of short options; one taking a value ends it (`-lc CMD`, `-cCMD`).
+        let cluster = &a[1..];
+        let mut i = 0;
+        while i < cluster.len() {
+            let ch = cluster[i];
+            let rest = &cluster[i + 1..];
+            let inline = (!rest.is_empty()).then_some(rest);
+            match ch {
+                b'l' => o.login = true,
+                b'p' | b'm' => o.preserve = true,
+                b'M' => o.master = true,
+                b'i' => o.force_pty = true,
+                b'v' => return Ok(Action::Version),
+                b'V' => return Ok(Action::VersionCode),
+                b'h' => return Ok(Action::Print(USAGE)),
+                b'c' | b's' | b't' | b'Z' | b'g' | b'G' => {
+                    let v = value(&format!("-{}", ch as char), inline)?;
                     match ch {
-                        'l' => o.login = true,
-                        'p' | 'm' => o.preserve = true,
-                        _ => o.master = true,
+                        b'c' => o.cmd = Some(v),
+                        b's' => o.shell = Some(v),
+                        // `-t shell|root` was this client's tier flag before; Magisk's is a PID.
+                        b't' => match v.as_slice() {
+                            b"shell" | b"root" => o.tier = parse_tier(&v)?,
+                            _ => o.target_pid = Some(parse_pid(&v)?),
+                        },
+                        b'Z' => o.context = Some(v),
+                        _ => root_group_only(&v)?,
                     }
+                    break;
                 }
+                _ => return Err(format!("invalid option: {}\n{USAGE}", String::from_utf8_lossy(&a))),
             }
-            _ => die(&format!("invalid option: {s}\n{USAGE}")),
+            i += 1;
         }
     }
-    o
+    if !command_argv.is_empty() {
+        if o.cmd.is_none() {
+            // AOSP: `su 0 id -u` runs `id -u`. The shell resolves it through PATH.
+            o.cmd = Some(b"exec \"$0\" \"$@\"".to_vec());
+        }
+        o.extra = command_argv;
+    }
+    if let Some(ctx) = o.context.take() {
+        let shell = o.shell.clone().unwrap_or_else(|| b"/system/bin/sh".to_vec());
+        let mut c = b"exec /system/bin/runcon ".to_vec();
+        c.extend(sh_quote(&ctx));
+        c.push(b' ');
+        c.extend(sh_quote(&shell));
+        if let Some(inner) = &o.cmd {
+            c.extend_from_slice(b" -c ");
+            c.extend(sh_quote(inner));
+            c.extend_from_slice(b" \"$0\" \"$@\"");
+        }
+        o.cmd = Some(c);
+    }
+    Ok(Action::Run(o))
+}
+
+fn parse_pid(v: &[u8]) -> Result<i32, String> {
+    std::str::from_utf8(v)
+        .ok()
+        .and_then(|s| s.parse::<i32>().ok())
+        .filter(|&n| n > 0)
+        .ok_or_else(|| format!("invalid pid: {}", String::from_utf8_lossy(v)))
+}
+
+/// A pty only for a real interactive session: both ends are terminals and there is no
+/// command, unless `-i` asks for one. Anything else gets the caller's own fds, so output is
+/// byte-exact (no CRLF) and stderr stays separate.
+fn wants_pty(stdin_tty: bool, stdout_tty: bool, has_cmd: bool, force: bool) -> bool {
+    stdin_tty && stdout_tty && (!has_cmd || force)
+}
+
+fn parse_args() -> Opts {
+    match parse(std::env::args_os().skip(1).map(OsString::into_vec)) {
+        Ok(Action::Run(o)) => o,
+        Ok(Action::Print(t)) => {
+            print!("{t}");
+            std::process::exit(0)
+        }
+        Ok(Action::Version) => {
+            println!("{}:YASVARA", p::VERSION_NAME);
+            std::process::exit(0)
+        }
+        Ok(Action::VersionCode) => {
+            println!("{}", p::VERSION_CODE);
+            std::process::exit(0)
+        }
+        Err(e) => die(&e),
+    }
 }
 
 fn connect() -> io::Result<RawFd> {
@@ -343,15 +482,24 @@ fn ask(req: &[u8], fds: &[RawFd]) -> (RawFd, Frame, io::Result<()>) {
 fn main() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
     let o = parse_args();
-    let interactive = isatty(0);
+    let interactive = wants_pty(isatty(0), isatty(1), o.cmd.is_some(), o.force_pty);
     // Built before connecting: the daemon is woken by the connect and often lands on this CPU.
     let mut req = build_request(&o, interactive);
     let mut fds: Vec<RawFd> = Vec::new();
+    if let Some(pid) = o.target_pid {
+        let path = format!("/proc/{pid}/ns/mnt\0");
+        let ns = unsafe { libc::open(path.as_ptr() as *const libc::c_char, libc::O_RDONLY | libc::O_CLOEXEC) };
+        if ns < 0 {
+            die(&format!("cannot open the mount namespace of {pid}: {}", io::Error::last_os_error()));
+        }
+        req.flags |= p::RF_HAS_MNTNS_FD | p::RF_TARGET_NS;
+        fds.push(ns);
+    }
     if req.has(p::RF_HAS_STDIO_FDS) {
         fds.extend_from_slice(&[0, 1, 2]);
     }
     let (mut conn, verdict, mut sent) = ask(&req.encode(), &fds);
-    if verdict.b & p::VF_WANTS_MNTNS != 0 && !o.master {
+    if verdict.b & p::VF_WANTS_MNTNS != 0 && !o.master && o.target_pid.is_none() {
         // A confined grant: ask again with the mount namespace. Not opened up front, as nsfs
         // is unlabeled and every descriptor of it passed to the daemon is an audited denial.
         if !may_open_mntns(unsafe { libc::getuid() }) {
@@ -503,5 +651,113 @@ mod tests {
         assert!(may_open_mntns(10 * 100_000 + 2000), "shell of a secondary user");
         assert!(!may_open_mntns(10195), "an app");
         assert!(!may_open_mntns(10 * 100_000 + 10195), "an app of a secondary user");
+    }
+
+    fn run(args: &[&str]) -> Opts {
+        match parse(args.iter().map(|a| a.as_bytes().to_vec())) {
+            Ok(Action::Run(o)) => o,
+            other => panic!("{args:?} → {other:?}"),
+        }
+    }
+
+    fn b(s: &str) -> Option<Vec<u8>> {
+        Some(s.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn magisk_command_forms() {
+        for args in [&["-c", "id"][..], &["-cid"], &["--command", "id"], &["--command=id"], &["root", "-c", "id"], &["-c", "id", "0"]] {
+            let o = run(args);
+            assert_eq!(o.cmd, b("id"), "{args:?}");
+            assert!(o.extra.is_empty(), "{args:?}");
+        }
+        assert_eq!(run(&["-c", "id"]).user, None);
+        assert_eq!(run(&["root", "-c", "id"]).user, Some(0));
+    }
+
+    #[test]
+    fn aosp_user_then_command_runs_directly() {
+        let o = run(&["0", "id", "-u"]);
+        assert_eq!(o.user, Some(0));
+        assert_eq!(o.cmd, b("exec \"$0\" \"$@\""));
+        assert_eq!(o.extra, vec![b"id".to_vec(), b"-u".to_vec()]);
+        // Options after the command belong to the command, not to su.
+        let o = run(&["root", "ls", "-l", "/data"]);
+        assert!(!o.login);
+        assert_eq!(o.extra.len(), 3);
+        let o = run(&["root", "sh", "-c", "echo hi"]);
+        assert_eq!(o.cmd, b("exec \"$0\" \"$@\""));
+        assert_eq!(o.extra, vec![b"sh".to_vec(), b"-c".to_vec(), b"echo hi".to_vec()]);
+    }
+
+    #[test]
+    fn explicit_command_keeps_trailing_words_as_positional_parameters() {
+        let o = run(&["-c", "echo $0 $1", "0", "a", "b"]);
+        assert_eq!(o.cmd, b("echo $0 $1"));
+        assert_eq!(o.extra, vec![b"a".to_vec(), b"b".to_vec()]);
+    }
+
+    #[test]
+    fn clusters_and_flags() {
+        let o = run(&["-lp"]);
+        assert!(o.login && o.preserve);
+        let o = run(&["-mm"]);
+        assert!(o.master && !o.preserve);
+        let o = run(&["-M", "-i", "-c", "top"]);
+        assert!(o.master && o.force_pty);
+        let o = run(&["-lc", "id"]);
+        assert!(o.login);
+        assert_eq!(o.cmd, b("id"));
+        assert!(run(&["-"]).login);
+        let o = run(&["-s", "/bin/bash", "--", "root"]);
+        assert_eq!(o.shell, b("/bin/bash"));
+        assert_eq!(o.user, Some(0));
+    }
+
+    #[test]
+    fn target_pid_and_tier() {
+        assert_eq!(run(&["-t", "1", "-c", "id"]).target_pid, Some(1));
+        assert_eq!(run(&["--target=42"]).target_pid, Some(42));
+        assert_eq!(run(&["--tier", "shell"]).tier, p::TIER_SHELL);
+        assert_eq!(run(&["-t", "shell"]).tier, p::TIER_SHELL, "old client spelling");
+        assert!(parse([b"-t".to_vec(), b"abc".to_vec()]).is_err());
+        assert!(parse([b"-t".to_vec(), b"0".to_vec()]).is_err());
+    }
+
+    #[test]
+    fn context_wraps_in_runcon_and_groups_are_root_only() {
+        let o = run(&["-Z", "u:r:shell:s0", "-c", "id -Z"]);
+        assert_eq!(o.cmd, b("exec /system/bin/runcon 'u:r:shell:s0' '/system/bin/sh' -c 'id -Z' \"$0\" \"$@\""));
+        let o = run(&["-Z", "u:r:su:s0"]);
+        assert_eq!(o.cmd, b("exec /system/bin/runcon 'u:r:su:s0' '/system/bin/sh'"));
+        assert!(run(&["-g", "0", "-G", "root"]).cmd.is_none());
+        assert!(parse([b"-g".to_vec(), b"1000".to_vec()]).is_err());
+    }
+
+    #[test]
+    fn errors_and_info() {
+        assert!(parse([b"--bogus".to_vec()]).is_err());
+        assert!(parse([b"-x".to_vec()]).is_err());
+        assert!(parse([b"-c".to_vec()]).is_err());
+        assert!(parse([b"nobody_here".to_vec()]).is_err());
+        assert_eq!(parse([b"-v".to_vec()]), Ok(Action::Version));
+        assert_eq!(parse([b"-V".to_vec()]), Ok(Action::VersionCode));
+        assert_eq!(parse([b"--help".to_vec()]), Ok(Action::Print(USAGE)));
+    }
+
+    #[test]
+    fn sh_quote_survives_single_quotes() {
+        assert_eq!(sh_quote(b"it's"), b"'it'\\''s'".to_vec());
+    }
+
+    #[test]
+    fn pty_only_for_interactive_terminals() {
+        // (stdin tty, stdout tty, has -c, -i) → pty
+        assert!(wants_pty(true, true, false, false));
+        assert!(!wants_pty(true, true, true, false), "su -c from a terminal: plain fds, no CRLF");
+        assert!(wants_pty(true, true, true, true), "-i forces it");
+        assert!(!wants_pty(true, false, false, false), "stdout piped");
+        assert!(!wants_pty(false, true, false, false), "stdin piped");
+        assert!(!wants_pty(false, false, true, true), "-i needs terminals");
     }
 }

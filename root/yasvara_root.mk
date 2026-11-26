@@ -1,6 +1,6 @@
 #
 # SPDX-FileCopyrightText: The Yasvara Project
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # native root. Debuggable builds only: the root shell is AOSP's userdebug `su`
 # domain, which does not exist (as a permissive domain) in `user` builds.

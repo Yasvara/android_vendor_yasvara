@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Runtime `sepolicy.rule` applier (pure Rust, Apache-2.0).
+//! Runtime `sepolicy.rule` applier (pure Rust).
 //!
 //! Reads `/sys/fs/selinux/policy`, parses module `sepolicy.rule` files via
 //! `yasvara_root_proto::sepolicy_parse`, applies binary `policydb` patches (or delegates

@@ -9,6 +9,7 @@
 /data/misc/yasvara_root/config(/.*)? u:object_r:yasvara_mod_data_file:s0
 /data/misc/yasvara_root/run         u:object_r:yasvara_su_run_file:s0
 /data/misc/yasvara_root/run/ctl\.sock u:object_r:yasvara_su_socket:s0
+/data/misc/yasvara_root/run/zygisk\.sock u:object_r:yasvara_zygisk_socket:s0
 /data/misc/yasvara_root/enrolled\.set u:object_r:yasvara_zygote_set_file:s0
 /data/misc/yasvara_root/mounts\.set   u:object_r:yasvara_zygote_set_file:s0
 /data/misc/yasvara_root/unmount\.set  u:object_r:yasvara_zygote_set_file:s0

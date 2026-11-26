@@ -1,13 +1,20 @@
 //
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // the ROM's native root. yasvara_rootd (init service) and su (its client) are
 // static executables: no dynamic linker, so the client's exec costs as little as possible
 // and Termux's LD_PRELOAD / LD_LIBRARY_PATH cannot affect either.
 
 package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
+    default_applicable_licenses: ["vendor_yasvara_root_license"],
+}
+
+license {
+    name: "vendor_yasvara_root_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-GPL-3.0-or-later"],
+    license_text: ["LICENSE"],
 }
 
 // The wire formats and the grants.v1 parser, shared by both. Pure data handling; the unit

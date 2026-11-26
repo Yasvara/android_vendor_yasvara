@@ -183,3 +183,27 @@ allow zygote yasvara_zygote_set_file:file r_file_perms;
 allow zygote yasvara_su_client_exec:file { getattr open read };
 allow zygote yasvara_zygisk_file:dir search;
 allow zygote yasvara_zygisk_file:file r_file_perms;
+
+# Set generation: rootd bumps it, Zygote reads one serial per fork. Apps get nothing.
+system_internal_prop(yasvara_akar_gen_prop)
+set_prop(yasvara_rootd, yasvara_akar_gen_prop)
+get_prop(zygote, yasvara_akar_gen_prop)
+
+# Native Zygisk in a scoped child, before the domain drop: getModuleDir() and module files.
+allow zygote yasvara_mod_data_file:dir r_dir_perms;
+allow zygote yasvara_mod_data_file:file r_file_perms;
+# connectCompanion(): its own socket type, so this grants nothing on ctl.sock.
+type yasvara_zygisk_socket, file_type, data_file_type, core_data_file_type;
+type_transition yasvara_rootd yasvara_su_run_file:sock_file yasvara_zygisk_socket "zygisk.sock";
+allow yasvara_rootd yasvara_zygisk_socket:sock_file { create setattr unlink rename write getattr };
+allow zygote yasvara_zygisk_socket:sock_file write;
+allow zygote yasvara_rootd:unix_stream_socket connectto;
+
+# Hide filter switches (/sys/kernel/yasvara_hide): rootd sets mounts/Zygisk, Kait sets Xposed.
+type sysfs_yasvara_hide, fs_type, sysfs_type;
+# init hands akar to root and kait to system in init.yasvara-system_ext.rc.
+allow init sysfs_yasvara_hide:file setattr;
+allow yasvara_rootd sysfs_yasvara_hide:dir search;
+allow yasvara_rootd sysfs_yasvara_hide:file rw_file_perms;
+allow system_server sysfs_yasvara_hide:dir search;
+allow system_server sysfs_yasvara_hide:file rw_file_perms;

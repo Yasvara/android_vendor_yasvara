@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! One enrolled connection. A request that is already queued (the normal case) is run by the main
 //! loop itself (`live.rs`) unless it needs a relay or a shell that is not an exec type; everything
@@ -188,7 +188,13 @@ pub fn admit(req: Request, fds: &[RawFd], grant: &GrantView) -> Result<Admitted,
     if req.has(RF_MOUNT_MASTER) && !may_go_global {
         return Err(Reason::Tier);
     }
-    let global = grant.global_ns || req.has(RF_MOUNT_MASTER);
+    // `su -t PID`: join that namespace instead. Root tier only, and only for a grant that
+    // may leave its own view anyway.
+    let target_ns = req.has(p::RF_TARGET_NS);
+    if target_ns && (mntns.is_none() || tier != TIER_ROOT || !may_go_global) {
+        return Err(if mntns.is_none() { Reason::BadRequest } else { Reason::Tier });
+    }
+    let global = !target_ns && (grant.global_ns || req.has(RF_MOUNT_MASTER));
     // A confined grant must not be escapable by leaving the descriptor out.
     if !global && mntns.is_none() {
         return Err(Reason::BadRequest);
@@ -766,10 +772,26 @@ fn cstr(mut v: Vec<u8>) -> CString {
     CString::new(v).unwrap()
 }
 
+/// System directories first so `/system/bin` always wins, then the caller's own entries
+/// (Termux tools stay reachable under `su -c`). Duplicates and empty entries are dropped.
+fn merged_path(caller: Option<&[u8]>) -> Vec<u8> {
+    let mut out = DEFAULT_PATH.as_bytes().to_vec();
+    let mut seen: Vec<&[u8]> = DEFAULT_PATH.as_bytes().split(|&c| c == b':').collect();
+    for dir in caller.unwrap_or_default().split(|&c| c == b':') {
+        if dir.is_empty() || dir[0] != b'/' || seen.contains(&dir) {
+            continue;
+        }
+        seen.push(dir);
+        out.push(b':');
+        out.extend_from_slice(dir);
+    }
+    out
+}
+
 /// The environment of the shell:
 /// * `-p` keeps the caller's environment untouched;
-/// * otherwise the caller's environment, minus every `LD_*`, with the stock system `PATH`
-///   and `HOME`/`SHELL`/`USER`/`LOGNAME` set (a Termux `PATH` would hide `/system/bin`);
+/// * otherwise the caller's environment, minus every `LD_*`, with `PATH` = system directories
+///   then the caller's, and `HOME`/`SHELL`/`USER`/`LOGNAME` set;
 /// * a login shell starts from the daemon's own (init-provided) environment plus `TERM`.
 fn build_env(req: &Request, uid: u32, tier: u8) -> Vec<Vec<u8>> {
     let login = req.has(RF_LOGIN);
@@ -801,11 +823,12 @@ fn build_env(req: &Request, uid: u32, tier: u8) -> Vec<Vec<u8>> {
         (_, 0) => "root".to_string(),
         (_, n) => n.to_string(),
     };
+    let caller_path = env.iter().find(|(k, _)| k == b"PATH").map(|(_, v)| v.clone());
     let mut set = |k: &str, v: &[u8]| {
         env.retain(|(ek, _)| ek != k.as_bytes());
         env.push((k.as_bytes().to_vec(), v.to_vec()));
     };
-    set("PATH", DEFAULT_PATH.as_bytes());
+    set("PATH", &merged_path(caller_path.as_deref()));
     set("HOME", SHELL_HOME.as_bytes());
     set("SHELL", if req.has(RF_HAS_SHELL) { &req.shell } else { DEFAULT_SHELL.as_bytes() });
     set("USER", user.as_bytes());
@@ -840,9 +863,37 @@ mod tests {
         assert_eq!(get(&env, "LD_LIBRARY_PATH"), None);
         assert_eq!(get(&env, "FOO").as_deref(), Some("1"));
         assert_eq!(get(&env, "TERM").as_deref(), Some("xterm"));
-        assert!(get(&env, "PATH").unwrap().contains("/system/bin"));
+        assert_eq!(
+            get(&env, "PATH").unwrap(),
+            format!("{DEFAULT_PATH}:/data/data/com.termux/files/usr/bin")
+        );
         assert_eq!(get(&env, "USER").as_deref(), Some("root"));
         assert_eq!(get(&env, "HOME").as_deref(), Some("/data/local/tmp"));
+    }
+
+    fn gv(tier: u8, global_ns: bool) -> GrantView {
+        GrantView { tier, global_ns, flags: 0, packages: String::new() }
+    }
+
+    #[test]
+    fn target_namespace_is_root_only_and_needs_the_fd() {
+        let r = |flags: u16, tier: u8| Request { flags, tier, ..Request::default() };
+        let t = RF_HAS_MNTNS_FD | p::RF_TARGET_NS;
+        let a = admit(r(t, 0), &[9], &gv(TIER_ROOT, true)).ok().unwrap();
+        assert!(!a.global, "joins the target, not the daemon's namespace");
+        assert_eq!(a.mntns, Some(9));
+        assert_eq!(admit(r(p::RF_TARGET_NS, 0), &[], &gv(TIER_ROOT, true)).err(), Some(Reason::BadRequest));
+        assert_eq!(admit(r(t, 0), &[9], &gv(TIER_SHELL, true)).err(), Some(Reason::Tier));
+        assert_eq!(admit(r(t, 0), &[9], &gv(TIER_ROOT, false)).err(), Some(Reason::Tier), "confined grant");
+        let a = admit(r(0, 0), &[], &gv(TIER_ROOT, true)).ok().unwrap();
+        assert!(a.global);
+    }
+
+    #[test]
+    fn merged_path_keeps_system_first_and_drops_junk() {
+        let m = merged_path(Some(b"/system/bin::relative:/t/bin:/t/bin:/system/xbin"));
+        assert_eq!(m, format!("{DEFAULT_PATH}:/t/bin").into_bytes());
+        assert_eq!(merged_path(None), DEFAULT_PATH.as_bytes().to_vec());
     }
 
     #[test]

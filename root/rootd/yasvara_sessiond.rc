@@ -1,6 +1,6 @@
 #
 # SPDX-FileCopyrightText: The Yasvara Project
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The root daemon and early-boot module/bootguard stages.
 # Boot stages use `exec` / `exec_background` (no extra `init.svc.*` properties leaked).
