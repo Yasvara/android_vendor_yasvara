@@ -1,0 +1,47 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_defaults {
+    name: "tempel_defaults",
+    crate_name: "tempel",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+}
+
+rust_library {
+    name: "libtempel",
+    defaults: ["tempel_defaults"],
+    host_supported: true,
+}
+
+rust_test_host {
+    name: "tempel_test",
+    defaults: ["tempel_defaults"],
+    test_suites: ["general-tests"],
+}
+
+rust_binary_host {
+    name: "tempel_bench",
+    srcs: ["src/bin/bench.rs"],
+    edition: "2021",
+    rustlibs: ["libtempel"],
+}
+
+// Loaded once by system_server for YasvaraTempelService.
+rust_ffi_shared {
+    name: "libtempel_jni",
+    crate_name: "tempel_jni",
+    srcs: ["jni/src/lib.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    rustlibs: [
+        "libtempel",
+        "libjni",
+    ],
+}

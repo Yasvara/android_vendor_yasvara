@@ -1,0 +1,20 @@
+# Host builds, `cargo test`, and `cargo run --release --bin tempel_bench`;
+# the platform builds this crate with Soong (Android.bp).
+[package]
+name = "tempel"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "tempel_bench"
+path = "src/bin/bench.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
