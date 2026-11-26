@@ -1,0 +1,75 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+// MapLibre Native for Android 13.7.1 and the runtime libraries it links, for the Samar map in
+// Laras. Sources and licences are listed in NOTICE.
+//
+
+package {
+    default_applicable_licenses: ["vendor_yasvara_maplibre_license"],
+}
+
+license {
+    name: "vendor_yasvara_maplibre_license",
+    license_kinds: [
+        "SPDX-license-identifier-Apache-2.0",
+        "SPDX-license-identifier-BSD-2-Clause",
+        "SPDX-license-identifier-MIT",
+    ],
+    license_text: ["NOTICE"],
+}
+
+java_import {
+    name: "yasvara-maplibre-geojson",
+    jars: ["android-sdk-geojson-6.0.1.jar"],
+    sdk_version: "current",
+}
+
+java_import {
+    name: "yasvara-maplibre-turf",
+    jars: ["android-sdk-turf-6.0.1.jar"],
+    sdk_version: "current",
+}
+
+java_import {
+    name: "yasvara-okhttp3",
+    jars: ["okhttp-4.12.0.jar"],
+    sdk_version: "current",
+}
+
+android_library_import {
+    name: "yasvara-maplibre-gestures",
+    aars: ["maplibre-android-gestures-0.0.4.aar"],
+    sdk_version: "current",
+    min_sdk_version: "21",
+}
+
+android_library_import {
+    name: "yasvara-timber",
+    aars: ["timber-5.0.1.aar"],
+    sdk_version: "current",
+    min_sdk_version: "14",
+}
+
+android_library_import {
+    name: "yasvara-maplibre",
+    aars: ["android-sdk-13.7.1.aar"],
+    sdk_version: "current",
+    min_sdk_version: "23",
+    extract_jni: true,
+    static_libs: [
+        "yasvara-maplibre-geojson",
+        "yasvara-maplibre-turf",
+        "yasvara-maplibre-gestures",
+        "yasvara-okhttp3",
+        "yasvara-timber",
+        "gson",
+        "okio-lib",
+        "androidx.annotation_annotation",
+        "androidx.fragment_fragment",
+        "androidx.interpolator_interpolator",
+        "kotlin-stdlib",
+        "kotlinx_coroutines",
+    ],
+}

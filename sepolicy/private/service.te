@@ -47,6 +47,10 @@ type yasvara_padat_mgr_service, system_server_service, service_manager_type;
 # Pasang lazy native In-OS Live CoW OTA daemon, "yasvara.pasang".
 type yasvara_pasang_service, service_manager_type;
 
+# Samar location override, "yasvara_samar". Settings calls need yasvara.permission.MANAGE_SAMAR
+# (Laras); the phone process asks whether cell identity is withheld from an app.
+type yasvara_samar_service, system_server_service, service_manager_type;
+
 # Tempel NFC card emulation, vault, and profile switching, "yasvara_tempel".
 # Every call requires yasvara.permission.MANAGE_TEMPEL (Laras).
 type yasvara_tempel_service, system_server_service, service_manager_type;

@@ -134,6 +134,10 @@ PRODUCT_PACKAGES += \
 PRODUCT_PACKAGES += \
     hentak_scan
 
+# Samar: location override policy, loaded by system_server
+PRODUCT_PACKAGES += \
+    libsamar_jni
+
 # Tempel: NFC card vault, NCI encoder, APDU responder, and tag writer, loaded by system_server
 PRODUCT_PACKAGES += \
     libtempel_jni

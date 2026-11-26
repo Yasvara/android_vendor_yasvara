@@ -1,0 +1,40 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_defaults {
+    name: "samar_defaults",
+    crate_name: "samar",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+}
+
+rust_library {
+    name: "libsamar",
+    defaults: ["samar_defaults"],
+    host_supported: true,
+}
+
+rust_test_host {
+    name: "samar_test",
+    defaults: ["samar_defaults"],
+    test_suites: ["general-tests"],
+}
+
+// Loaded by system_server for the location override policy.
+rust_ffi_shared {
+    name: "libsamar_jni",
+    crate_name: "samar_jni",
+    srcs: ["jni/src/lib.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    rustlibs: [
+        "libsamar",
+        "libjni",
+    ],
+}

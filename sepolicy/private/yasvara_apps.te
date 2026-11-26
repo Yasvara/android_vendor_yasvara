@@ -23,5 +23,8 @@ allow { platform_app_all system_app } yasvara_pasang_service:service_manager fin
 allow audioserver yasvara_hentak_service:service_manager find;
 hal_client_domain(audioserver, hal_vibrator)
 
+# Samar: Laras (platform_app*) manages it; com.android.phone (radio) checks the radio layer.
+allow { platform_app_all priv_app_all system_app radio } yasvara_samar_service:service_manager find;
+
 # Tempel: Laras (platform_app*) manages NFC profiles, HCE responder, and writer frames.
 allow { platform_app_all priv_app_all system_app } yasvara_tempel_service:service_manager find;
