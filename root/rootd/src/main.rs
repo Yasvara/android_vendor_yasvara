@@ -552,6 +552,8 @@ fn main() {
                         }
                     }
                 }
+                // A CLI enable/disable republishes zygisk.set; a config change may stop Zygisk.
+                zygisk_companion::reconcile(&cfg.data_dir);
                 continue;
             }
             if ev.u64 == 3 {
@@ -602,6 +604,8 @@ fn main() {
                     sessions.retain(|&(p, _)| p != pid);
                     lives.on_exit(ep, pid, status, &cfg);
                 }
+                // Install, hot install, enable and remove run in forked mgmt workers.
+                zygisk_companion::reconcile(&cfg.data_dir);
                 continue;
             }
             // Drain the backlog: the listener is non-blocking.
