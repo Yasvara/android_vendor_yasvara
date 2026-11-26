@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `libyasvara_zygisk.so` — ROM-Native Zygisk runtime (API v4 & v5).
 //!
@@ -22,9 +22,10 @@ use std::sync::Mutex;
 use yasvara_root_proto::mounts::{ZygiskSet, SCOPE_ALL_NON_DENYLIST};
 
 use crate::abi::{
-    ApiTable, AppSpecializeArgs, JniEnvPtr, JniNativeMethod, ModuleAbi, ServerSpecializeArgs,
-    ZygiskModuleEntryFn, OPTION_DLCLOSE_MODULE_LIBRARY, OPTION_FORCE_DENYLIST_UNMOUNT,
-    STATE_FLAG_PROCESS_GRANTED_ROOT, STATE_FLAG_PROCESS_ON_DENYLIST, ZYGISK_OUT_FORCE_UNMOUNT,
+    ApiTable, AppSpecializeArgs, AppSpecializeArgsV1, JniEnvPtr, JniNativeMethod, ModuleAbi,
+    ServerSpecializeArgs, ZygiskModuleEntryFn, OPTION_DLCLOSE_MODULE_LIBRARY,
+    OPTION_FORCE_DENYLIST_UNMOUNT, STATE_FLAG_PROCESS_GRANTED_ROOT, STATE_FLAG_PROCESS_ON_DENYLIST,
+    ZYGISK_OUT_FORCE_UNMOUNT,
 };
 
 pub const COMPANION_MAGIC: [u8; 4] = *b"AKZC";
@@ -58,9 +59,39 @@ unsafe extern "C" fn api_register_module(table: *mut ApiTable, module: *mut Modu
     if table.is_null() || module.is_null() {
         return false;
     }
+    let ver = (*module).api_version;
+    if !(1..=5).contains(&ver) {
+        return false;
+    }
     let mod_ctx = &mut *((*table).impl_ptr as *mut LoadedModule);
     mod_ctx.abi = Some(std::ptr::read(module));
+    if ver < 4 {
+        // v1–v3: slot 3 is (regex, symbol), slot 4 is pltHookExclude. Commit and the rest match v4.
+        (*table).plt_hook_register = std::mem::transmute(api_plt_hook_register_v1 as unsafe extern "C" fn(
+            *const c_char,
+            *const c_char,
+            *mut c_void,
+            *mut *mut c_void,
+        ));
+        (*table).exempt_fd = std::mem::transmute(api_plt_hook_exclude_v1 as unsafe extern "C" fn(
+            *const c_char,
+            *const c_char,
+        ));
+    }
     true
+}
+
+unsafe extern "C" fn api_plt_hook_register_v1(
+    regex: *const c_char,
+    symbol: *const c_char,
+    new_func: *mut c_void,
+    old_func: *mut *mut c_void,
+) {
+    plt::register_regex(regex, symbol, new_func, old_func);
+}
+
+unsafe extern "C" fn api_plt_hook_exclude_v1(regex: *const c_char, symbol: *const c_char) {
+    plt::exclude(regex, symbol);
 }
 
 unsafe extern "C" fn api_hook_jni_native_methods(
@@ -89,10 +120,38 @@ unsafe extern "C" fn api_hook_jni_native_methods(
     let cls = find_class(env, class_name);
     if cls.is_null() {
         exc_clear(env);
+        for i in 0..num_methods {
+            (*methods.add(i as usize)).fn_ptr = std::ptr::null_mut();
+        }
+        return;
+    }
+    // libart exports this. It swaps the ArtMethod JNI entry and returns the previous one.
+    type ArtHook = unsafe extern "C" fn(
+        JniEnvPtr,
+        *mut c_void,
+        *const c_char,
+        *const c_char,
+        *mut c_void,
+    ) -> *mut c_void;
+    let art_hook = libc::dlsym(
+        libc::RTLD_DEFAULT,
+        c"yasvara_zygisk_hook_jni".as_ptr(),
+    );
+    if !art_hook.is_null() {
+        let hook: ArtHook = std::mem::transmute(art_hook);
+        for i in 0..num_methods {
+            let m = &mut *methods.add(i as usize);
+            let new_fn = m.fn_ptr;
+            let old = hook(env, cls, m.name, m.signature, new_fn);
+            m.fn_ptr = old;
+        }
         return;
     }
     if reg_natives(env, cls, methods, num_methods) != 0 {
         exc_clear(env);
+        for i in 0..num_methods {
+            (*methods.add(i as usize)).fn_ptr = std::ptr::null_mut();
+        }
     }
 }
 
@@ -250,62 +309,76 @@ extern "C" {
     ) -> *mut c_void;
 }
 
-/// Loads a Zygisk module shared object from disk via a private `memfd_create` buffer so:
-///   1. Zygote only needs read-only (`r_file_perms`) on `/data/misc/yasvara_root/...`
-///      (zero AOSP `data_file_type:file execute` neverallow exemptions needed).
-///   2. On Android, `android_dlopen_ext(ANDROID_DLEXT_USE_LIBRARY_FD)` maps the `zygote_tmpfs`
-///      memfd directly using stock AOSP `allow zygote zygote_tmpfs:file { read write getattr map execute }`.
-///   3. No `/data/misc/yasvara_root/modules/...` file path leaks into `/proc/self/maps`.
-unsafe fn dlopen_from_readonly_file(lib_path: &str) -> *mut c_void {
-    let Ok(bytes) = std::fs::read(lib_path) else {
+/// Fallback when Zygote has no shared copy: a private memfd copy of the module, mapped by fd.
+/// Zygote may read module files but not execute them, and no module path reaches the maps.
+unsafe fn dlopen_private_copy(lib_path: &str) -> *mut c_void {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let Ok(mut src) = std::fs::File::open(lib_path) else { return std::ptr::null_mut() };
+    let mfd = libc::syscall(libc::SYS_memfd_create, c"jit-cache".as_ptr(), libc::MFD_CLOEXEC) as RawFd;
+    if mfd < 0 {
         return std::ptr::null_mut();
-    };
-    let name = CString::new("jit-cache").unwrap();
-    let mfd = libc::syscall(libc::SYS_memfd_create, name.as_ptr(), libc::MFD_CLOEXEC) as RawFd;
-    if mfd >= 0 {
-        let mut off = 0usize;
-        let mut ok = true;
-        while off < bytes.len() {
-            let n = libc::write(mfd, bytes[off..].as_ptr() as *const c_void, bytes.len() - off);
-            if n <= 0 {
-                ok = false;
-                break;
-            }
-            off += n as usize;
-        }
-        if ok {
-            let _ = libc::lseek(mfd, 0, libc::SEEK_SET);
-            #[cfg(target_os = "android")]
-            let handle = {
-                let ext = AndroidDlextInfo {
-                    flags: ANDROID_DLEXT_USE_LIBRARY_FD,
-                    reserved_addr: std::ptr::null_mut(),
-                    reserved_size: 0,
-                    relro_fd: -1,
-                    library_fd: mfd,
-                    library_fd_offset: 0,
-                    library_namespace: std::ptr::null_mut(),
-                };
-                android_dlopen_ext(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL, &ext)
-            };
-            #[cfg(not(target_os = "android"))]
-            let handle = {
-                let fd_path = CString::new(format!("/proc/self/fd/{mfd}")).unwrap();
-                libc::dlopen(fd_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL)
-            };
-            libc::close(mfd);
-            if !handle.is_null() {
-                return handle;
-            }
-        } else {
-            libc::close(mfd);
-        }
     }
-    // Fallback to direct path if memfd_create is unavailable.
-    let Ok(c_lib) = CString::new(lib_path) else {
+    let mut dst = std::fs::File::from(OwnedFd::from_raw_fd(mfd));
+    // Kernel-side copy (copy_file_range / sendfile), no heap buffer of the whole module.
+    if std::io::copy(&mut src, &mut dst).is_err() {
         return std::ptr::null_mut();
-    };
-    libc::dlopen(c_lib.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL)
+    }
+    dlopen_fd(mfd)
+}
+
+unsafe fn dlopen_fd(fd: i32) -> *mut c_void {
+    #[cfg(target_os = "android")]
+    {
+        let ext = AndroidDlextInfo {
+            flags: ANDROID_DLEXT_USE_LIBRARY_FD,
+            reserved_addr: std::ptr::null_mut(),
+            reserved_size: 0,
+            relro_fd: -1,
+            library_fd: fd,
+            library_fd_offset: 0,
+            library_namespace: std::ptr::null_mut(),
+        };
+        return android_dlopen_ext(c"jit-cache".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL, &ext);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let fd_path = CString::new(format!("/proc/self/fd/{fd}")).unwrap();
+        libc::dlopen(fd_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL)
+    }
+}
+
+unsafe fn dispatch_pre(abi: &ModuleAbi, is_system_server: bool, args_ptr: *mut c_void) {
+    if is_system_server {
+        if let Some(pre) = abi.pre_server_specialize {
+            pre(abi.impl_ptr, args_ptr as *mut ServerSpecializeArgs);
+        }
+        return;
+    }
+    let Some(pre) = abi.pre_app_specialize else { return };
+    if abi.api_version <= 2 {
+        let v5 = &*(args_ptr as *const AppSpecializeArgs);
+        let v1 = AppSpecializeArgsV1::from_v5(v5);
+        pre(abi.impl_ptr, &v1 as *const AppSpecializeArgsV1 as *mut AppSpecializeArgs);
+    } else {
+        pre(abi.impl_ptr, args_ptr as *mut AppSpecializeArgs);
+    }
+}
+
+unsafe fn dispatch_post(abi: &ModuleAbi, is_system_server: bool, args_ptr: *const c_void) {
+    if is_system_server {
+        if let Some(post) = abi.post_server_specialize {
+            post(abi.impl_ptr, args_ptr as *const ServerSpecializeArgs);
+        }
+        return;
+    }
+    let Some(post) = abi.post_app_specialize else { return };
+    if abi.api_version <= 2 {
+        let v5 = &*(args_ptr as *const AppSpecializeArgs);
+        let v1 = AppSpecializeArgsV1::from_v5(v5);
+        post(abi.impl_ptr, &v1 as *const AppSpecializeArgsV1 as *const AppSpecializeArgs);
+    } else {
+        post(abi.impl_ptr, args_ptr as *const AppSpecializeArgs);
+    }
 }
 
 /// Phase 1 entrypoint called by `Zygote.cpp` `SpecializeCommon` before UID/SELinux drop.
@@ -320,6 +393,8 @@ pub unsafe extern "C" fn yasvara_zygisk_pre(
     args_ptr: *mut c_void,
     zygisk_set_bytes: *const u8,
     zygisk_set_len: usize,
+    shared_fds: *const i32,
+    shared_fd_count: usize,
 ) -> u32 {
     if env.is_null() || args_ptr.is_null() || zygisk_set_bytes.is_null() || zygisk_set_len == 0 {
         return 0;
@@ -330,7 +405,6 @@ pub unsafe extern "C" fn yasvara_zygisk_pre(
         return 0;
     }
 
-    let is_64bit = cfg!(target_pointer_width = "64");
     let app_id = uid % 100_000;
     let mut state_flags = 0u32;
     if is_enrolled_root {
@@ -344,8 +418,8 @@ pub unsafe extern "C" fn yasvara_zygisk_pre(
     let Ok(mut loaded) = LOADED_MODULES.lock() else { return 0 };
     loaded.clear();
 
-    for entry in &set.modules {
-        let lib_path = if is_64bit { &entry.lib64_path } else { &entry.lib32_path };
+    for (mod_index, entry) in set.modules.iter().enumerate() {
+        let lib_path = &entry.lib64_path; // arm64-only
         if lib_path.is_empty() {
             continue;
         }
@@ -366,7 +440,18 @@ pub unsafe extern "C" fn yasvara_zygisk_pre(
 
         let Ok(c_dir) = CString::new(entry.mod_dir.as_str()) else { continue };
         let mod_dir_fd = libc::open(c_dir.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC);
-        let handle = dlopen_from_readonly_file(lib_path.as_str());
+        let shared = if !shared_fds.is_null() && mod_index < shared_fd_count {
+            *shared_fds.add(mod_index)
+        } else {
+            -1
+        };
+        // One memfd per module, created in the zygote parent and inherited. Every child maps
+        // that same inode, so the text pages stay shared. A negative fd falls back to a private copy.
+        let handle = if shared >= 0 {
+            dlopen_fd(shared)
+        } else {
+            dlopen_private_copy(lib_path.as_str())
+        };
         if handle.is_null() {
             if mod_dir_fd >= 0 {
                 libc::close(mod_dir_fd);
@@ -401,13 +486,7 @@ pub unsafe extern "C" fn yasvara_zygisk_pre(
         entry_fn(table_ptr, env);
 
         if let Some(ref abi) = boxed.abi {
-            if is_system_server {
-                if let Some(pre) = abi.pre_server_specialize {
-                    pre(abi.impl_ptr, args_ptr as *mut ServerSpecializeArgs);
-                }
-            } else if let Some(pre) = abi.pre_app_specialize {
-                pre(abi.impl_ptr, args_ptr as *mut AppSpecializeArgs);
-            }
+            dispatch_pre(abi, is_system_server, args_ptr);
         }
         if boxed.force_unmount {
             out_flags |= ZYGISK_OUT_FORCE_UNMOUNT;
@@ -419,23 +498,18 @@ pub unsafe extern "C" fn yasvara_zygisk_pre(
 
 /// Phase 2 entrypoint called by `Zygote.cpp` `SpecializeCommon` after `gCallPostForkChildHooks`.
 /// Runs `postAppSpecialize` / `postServerSpecialize` and unloads any module requesting
-/// `DLCLOSE_MODULE_LIBRARY`.
+/// `DLCLOSE_MODULE_LIBRARY`. Returns whether a module stays loaded; when none does, Zygote
+/// unloads this runtime as well.
 #[no_mangle]
 pub unsafe extern "C" fn yasvara_zygisk_post(
     _env: JniEnvPtr,
     is_system_server: bool,
     args_ptr: *const c_void,
-) {
-    let Ok(mut loaded) = LOADED_MODULES.lock() else { return };
+) -> bool {
+    let Ok(mut loaded) = LOADED_MODULES.lock() else { return true };
     for m in loaded.iter_mut() {
         if let Some(ref abi) = m.abi {
-            if is_system_server {
-                if let Some(post) = abi.post_server_specialize {
-                    post(abi.impl_ptr, args_ptr as *const ServerSpecializeArgs);
-                }
-            } else if let Some(post) = abi.post_app_specialize {
-                post(abi.impl_ptr, args_ptr as *const AppSpecializeArgs);
-            }
+            dispatch_post(abi, is_system_server, args_ptr);
         }
         if m.mod_dir_fd >= 0 {
             libc::close(m.mod_dir_fd);
@@ -452,4 +526,5 @@ pub unsafe extern "C" fn yasvara_zygisk_post(
             true
         }
     });
+    !loaded.is_empty()
 }

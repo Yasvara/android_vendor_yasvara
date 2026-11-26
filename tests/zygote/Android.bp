@@ -1,0 +1,19 @@
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+
+// Host test of the Zygote Tabir decisions. Zygote.cpp itself is not a host library;
+// it calls the same header this test links.
+cc_test_host {
+    name: "yasvara_zygote_tabir_test",
+    srcs: ["yasvara_zygote_tabir_test.cpp"],
+    include_dirs: [
+        "frameworks/base/core/jni",
+    ],
+    compile_multilib: "64",
+    test_suites: ["general-tests"],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}

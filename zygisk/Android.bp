@@ -1,11 +1,18 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ROM-Native Zygisk runtime (API v4 & v5) — pure Rust, multilib (arm64-v8a + armeabi-v7a),
-// loaded lazily inside scoped Zygote children only (zero Zygote pollution, zero idle daemon).
+// ROM-Native Zygisk runtime. onyx is arm64-only (no zygote32), so this library is 64-bit.
+// Loaded lazily inside scoped Zygote children only (zero Zygote pollution, zero idle daemon).
 
 package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
+    default_applicable_licenses: ["vendor_yasvara_zygisk_license"],
+}
+
+license {
+    name: "vendor_yasvara_zygisk_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-GPL-3.0-or-later"],
+    license_text: ["LICENSE"],
 }
 
 rust_ffi_shared {
@@ -14,7 +21,7 @@ rust_ffi_shared {
     srcs: ["src/lib.rs"],
     edition: "2021",
     system_ext_specific: true,
-    compile_multilib: "both",
+    compile_multilib: "64",
     prefer_rlib: true,
     rustlibs: [
         "libyasvara_root_proto",
@@ -37,6 +44,7 @@ rust_binary {
     srcs: ["src/companion_bin.rs"],
     edition: "2021",
     system_ext_specific: true,
+    compile_multilib: "64",
     rustlibs: [
         "liblibc",
     ],

@@ -1,15 +1,13 @@
 // SPDX-FileCopyrightText: The Yasvara Project
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Binary-compatible Zygisk C-ABI definitions (API v1..v5).
 //!
 //! Field ordering and types match the public Zygisk v4/v5 header ABI so standard
-//! precompiled Zygisk modules (`arm64-v8a.so` / `armeabi-v7a.so`) load unmodified.
+//! precompiled Zygisk modules (`arm64-v8a.so`) load unmodified.
 
 use std::ffi::{c_char, c_int, c_long, c_void};
 
-pub const ZYGISK_API_VERSION_4: c_long = 4;
-pub const ZYGISK_API_VERSION_5: c_long = 5;
 
 pub const STATE_FLAG_PROCESS_GRANTED_ROOT: u32 = 1 << 0;
 pub const STATE_FLAG_PROCESS_ON_DENYLIST: u32 = 1 << 1;
@@ -34,7 +32,51 @@ pub struct JniNativeMethod {
     pub fn_ptr: *mut c_void,
 }
 
-/// Exact Zygisk API v5 `AppSpecializeArgs` layout (prefix-compatible with v1..v4).
+/// Zygisk API v1/v2 `AppSpecializeArgs`. No `rlimits`, no `fds_to_ignore`.
+/// v3+ uses [`AppSpecializeArgs`].
+#[repr(C)]
+pub struct AppSpecializeArgsV1 {
+    pub uid: *mut i32,
+    pub gid: *mut i32,
+    pub gids: *mut JIntArray,
+    pub runtime_flags: *mut i32,
+    pub mount_external: *mut i32,
+    pub se_info: *mut JString,
+    pub nice_name: *mut JString,
+    pub instruction_set: *mut JString,
+    pub app_data_dir: *mut JString,
+    pub is_child_zygote: *mut u8,
+    pub is_top_app: *mut u8,
+    pub pkg_data_info_list: *mut JObjectArray,
+    pub whitelisted_data_info_list: *mut JObjectArray,
+    pub mount_data_dirs: *mut u8,
+    pub mount_storage_dirs: *mut u8,
+}
+
+impl AppSpecializeArgsV1 {
+    /// Rebuild the v1 view from the v5 struct Zygote actually fills.
+    pub fn from_v5(v5: &AppSpecializeArgs) -> Self {
+        Self {
+            uid: v5.uid,
+            gid: v5.gid,
+            gids: v5.gids,
+            runtime_flags: v5.runtime_flags,
+            mount_external: v5.mount_external,
+            se_info: v5.se_info,
+            nice_name: v5.nice_name,
+            instruction_set: v5.instruction_set,
+            app_data_dir: v5.app_data_dir,
+            is_child_zygote: v5.is_child_zygote,
+            is_top_app: v5.is_top_app,
+            pkg_data_info_list: v5.pkg_data_info_list,
+            whitelisted_data_info_list: v5.whitelisted_data_info_list,
+            mount_data_dirs: v5.mount_data_dirs,
+            mount_storage_dirs: v5.mount_storage_dirs,
+        }
+    }
+}
+
+/// Exact Zygisk API v5 `AppSpecializeArgs` layout (prefix-compatible with v3/v4).
 #[repr(C)]
 pub struct AppSpecializeArgs {
     // v1
@@ -120,6 +162,15 @@ mod tests {
         assert_eq!(offset_of!(ApiTable, set_option), 7 * ptr);
         assert_eq!(offset_of!(ApiTable, get_module_dir), 8 * ptr);
         assert_eq!(offset_of!(ApiTable, get_flags), 9 * ptr);
+    }
+
+    #[test]
+    fn v1_args_skip_rlimits_and_fds() {
+        let ptr = size_of::<*mut c_void>();
+        assert_eq!(offset_of!(AppSpecializeArgsV1, mount_external), 4 * ptr);
+        assert_eq!(offset_of!(AppSpecializeArgs, mount_external), 5 * ptr);
+        assert_eq!(offset_of!(AppSpecializeArgsV1, is_child_zygote), 9 * ptr);
+        assert_eq!(offset_of!(AppSpecializeArgs, is_child_zygote), 11 * ptr);
     }
 
     #[test]
