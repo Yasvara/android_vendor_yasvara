@@ -99,7 +99,7 @@ rust_ffi_shared {
     srcs: ["jni/src/lib.rs"],
     edition: "2021",
     system_ext_specific: true,
-    compile_multilib: "both",
+    compile_multilib: "64",
     prefer_rlib: true,
     rustlibs: [
         "libjni_sys",
