@@ -4,7 +4,7 @@
 //! Zygisk companion launcher on `yasvara_rootd`'s epoll loop.
 //!
 //! rootd is static and never maps module code. On `api->connectCompanion()` it reads
-//! `[AKZC, id_len, id]` and hands the fd to `/system_ext/bin/yasvara_zygisk_companion`, one
+//! `[AKZC, id_len, id]` and hands the fd to `/system/xbin/yasvara_zygisk_companion`, one
 //! resident process per module that loads the `.so` once and exits after 60 s idle.
 //!
 //! A companion lives only as long as the code it loaded: a replaced `.so` (hot install) retires
@@ -25,7 +25,7 @@ use yasvara_root_proto::modules::validate_module_id;
 use crate::sys;
 
 const COMPANION_MAGIC: [u8; 4] = *b"AKZC";
-const COMPANION_HELPER: &str = "/system_ext/bin/yasvara_zygisk_companion";
+const COMPANION_HELPER: &str = "/system/xbin/yasvara_zygisk_companion";
 const COMPANION_ABI: &str = "arm64-v8a.so";
 
 struct LiveCompanion {

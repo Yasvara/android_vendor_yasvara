@@ -101,15 +101,24 @@ impl<T> FileCache<T> {
         now: Instant,
         parse: impl FnOnce(&str) -> Option<T>,
     ) -> Lookup<'_, T> {
-        self.current_with_reader(path, now, parse, read_snapshot)
+        self.current_with_reader(path, now, |s: String| parse(&s), read_snapshot)
     }
 
-    fn current_with_reader(
+    pub fn current_bytes(
         &mut self,
         path: &Path,
         now: Instant,
-        parse: impl FnOnce(&str) -> Option<T>,
-        read: impl FnOnce(&Path, Fingerprint) -> Result<String, Failure>,
+        parse: impl FnOnce(&[u8]) -> Option<T>,
+    ) -> Lookup<'_, T> {
+        self.current_with_reader(path, now, |b: Vec<u8>| parse(&b), read_snapshot_bytes)
+    }
+
+    fn current_with_reader<R>(
+        &mut self,
+        path: &Path,
+        now: Instant,
+        parse: impl FnOnce(R) -> Option<T>,
+        read: impl FnOnce(&Path, Fingerprint) -> Result<R, Failure>,
     ) -> Lookup<'_, T> {
         let fingerprint = match fingerprint(path) {
             Ok(fingerprint) => fingerprint,
@@ -136,7 +145,7 @@ impl<T> FileCache<T> {
         self.fingerprint = Some(fingerprint);
         self.retry_at = Some(now + RETRY_INTERVAL);
         let result = read(path, fingerprint).and_then(|content| {
-            let entry = parse(&content).ok_or(Failure::InvalidKeybox)?;
+            let entry = parse(content).ok_or(Failure::InvalidKeybox)?;
             if self::fingerprint(path)? != fingerprint {
                 return Err(Failure::ChangedWhileReading);
             }
@@ -176,13 +185,18 @@ fn fingerprint(path: &Path) -> Result<Fingerprint, Failure> {
 }
 
 fn read_snapshot(path: &Path, expected: Fingerprint) -> Result<String, Failure> {
+    let bytes = read_snapshot_bytes(path, expected)?;
+    String::from_utf8(bytes).map_err(|_| Failure::InvalidKeybox)
+}
+
+fn read_snapshot_bytes(path: &Path, expected: Fingerprint) -> Result<Vec<u8>, Failure> {
     let mut file = File::open(path).map_err(|error| Failure::io("open", error))?;
     let before = file.metadata().map_err(|error| Failure::io("fstat", error))?;
     if Fingerprint::of(&before) != expected {
         return Err(Failure::ChangedWhileReading);
     }
-    let mut content = String::with_capacity(expected.size as usize);
-    file.read_to_string(&mut content).map_err(|error| Failure::io("read", error))?;
+    let mut content = Vec::with_capacity(expected.size as usize);
+    file.read_to_end(&mut content).map_err(|error| Failure::io("read", error))?;
     let after = file.metadata().map_err(|error| Failure::io("fstat", error))?;
     if Fingerprint::of(&after) != expected {
         return Err(Failure::ChangedWhileReading);
@@ -258,7 +272,7 @@ mod tests {
         let cached = cache.current_with_reader(
             &fixture.path,
             now + DIAGNOSTIC_INTERVAL,
-            |_| panic!("unchanged success must not parse"),
+            |_: String| panic!("unchanged success must not parse"),
             |_, _| panic!("unchanged success must not read"),
         );
         assert!(!cached.loaded);
@@ -272,10 +286,15 @@ mod tests {
         assert!(cleared.entry.is_none() && cleared.diagnostic.is_none());
 
         fixture.write(b"valid:first");
-        let raced = cache.current_with_reader(&fixture.path, now, parse, |path, expected| {
-            fixture.replace(b"valid:raced", UNIX_EPOCH);
-            read_snapshot(path, expected)
-        });
+        let raced = cache.current_with_reader(
+            &fixture.path,
+            now,
+            |s: String| parse(&s),
+            |path, expected| {
+                fixture.replace(b"valid:raced", UNIX_EPOCH);
+                read_snapshot(path, expected)
+            },
+        );
         assert!(matches!(raced.diagnostic, Some(Failure::ChangedWhileReading)));
         assert_eq!(cache.current(&fixture.path, now, parse).entry.map(String::as_str), Some("raced"));
 

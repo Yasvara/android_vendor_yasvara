@@ -450,14 +450,13 @@ class TestSourceSepolicyNoLeaks(unittest.TestCase):
 
     def test_fsck_untrusted_has_no_sys_admin(self) -> None:
         fsck_te = strip_te_comments(
-            (SRC_ROOT / "device/lineage/sepolicy/common/private/fsck_untrusted.te").read_text(encoding="utf-8")
+            (SRC_ROOT / "vendor/yasvara/sepolicy/common/private/fsck_untrusted.te").read_text(encoding="utf-8")
         )
         self.assertNotIn("sys_admin", fsck_te)
 
     def test_no_forbidden_types_declared_in_source_trees(self) -> None:
         trees = [
             SRC_ROOT / "system/sepolicy",
-            SRC_ROOT / "device/lineage/sepolicy",
             SRC_ROOT / "vendor/yasvara/sepolicy",
         ]
         type_decl_re = re.compile(
@@ -471,11 +470,13 @@ class TestSourceSepolicyNoLeaks(unittest.TestCase):
                 self.assertIsNone(m, f"Forbidden type declared in {te_file}: {m.group(0) if m else ''}")
 
         for ctx_file in (
-            SRC_ROOT / "device/lineage/sepolicy/common/private/file_contexts",
-            SRC_ROOT / "device/lineage/sepolicy/common/private/service_contexts",
+            SRC_ROOT / "vendor/yasvara/sepolicy/common/private/file_contexts",
+            SRC_ROOT / "vendor/yasvara/sepolicy/common/private/service_contexts",
             SRC_ROOT / "vendor/yasvara/sepolicy/private/file_contexts",
             SRC_ROOT / "vendor/yasvara/sepolicy/private/service_contexts",
         ):
+            if not ctx_file.is_file():
+                continue
             cleaned = strip_te_comments(ctx_file.read_text(encoding="utf-8"))
             for forbidden in FORBIDDEN_RAW_CONTEXT_TYPES:
                 self.assertNotRegex(
@@ -486,7 +487,6 @@ class TestSourceSepolicyNoLeaks(unittest.TestCase):
 
     def test_lineage_and_yasvara_services_not_findable_by_untrusted_apps(self) -> None:
         trees = [
-            SRC_ROOT / "device/lineage/sepolicy",
             SRC_ROOT / "vendor/yasvara/sepolicy",
         ]
         svc_pattern = "|".join(re.escape(s) for s in PROTECTED_SERVICES_DENIED_TO_UNTRUSTED)
@@ -502,26 +502,41 @@ class TestSourceSepolicyNoLeaks(unittest.TestCase):
         yasvara_fc = strip_te_comments(
             (SRC_ROOT / "vendor/yasvara/sepolicy/private/file_contexts").read_text(encoding="utf-8")
         )
-        lineage_fc = strip_te_comments(
-            (SRC_ROOT / "device/lineage/sepolicy/common/private/file_contexts").read_text(encoding="utf-8")
+        common_fc = strip_te_comments(
+            (SRC_ROOT / "vendor/yasvara/sepolicy/common/private/file_contexts").read_text(encoding="utf-8")
         )
-        for expected in ("system_ext_sepolicy", "product_sepolicy", "yasvara_sessiond"):
+        for expected in ("system_ext_sepolicy", "product_sepolicy", "yasvara_sessiond", "init\\\\.yasvara-system_ext\\\\.rc"):
             self.assertRegex(yasvara_fc, rf"{expected}.*u:object_r:sepolicy_file:s0")
-        self.assertRegex(lineage_fc, r"adb_root\\\.rc\s+u:object_r:sepolicy_file:s0")
+        self.assertRegex(common_fc, r"adb_root\\\.rc\s+u:object_r:sepolicy_file:s0")
 
-    def test_yasvara_property_contexts_hides_sessiond_status(self) -> None:
+    def test_yasvara_property_contexts_hides_sessiond_status_and_has_no_comments(self) -> None:
         prop_ctx = (SRC_ROOT / "vendor/yasvara/sepolicy/private/property_contexts").read_text(encoding="utf-8")
         self.assertRegex(
             strip_te_comments(prop_ctx),
             r"init\.svc\.yasvara_sessiond\s+u:object_r:init_svc_debug_prop:s0",
         )
+        for lineno, line in enumerate(prop_ctx.splitlines(), 1):
+            self.assertFalse(
+                line.lstrip().startswith("#"),
+                f"property_contexts line {lineno} must not contain world-readable comments: {line}",
+            )
+
+    def test_no_exported_zygisk_or_kait_symbols_in_platform_libs(self) -> None:
+        jni_cc = (SRC_ROOT / "art/runtime/jni/jni_internal.cc").read_text(encoding="utf-8")
+        self.assertNotIn("yasvara_zygisk_hook_jni", jni_cc)
+        res_cpp = (SRC_ROOT / "frameworks/base/libs/androidfw/ResourceTypes.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("yasvara_kait_xml_", res_cpp)
+        self.assertNotIn("kaitMutableAttrNameResIdSlot", res_cpp)
+        res_h = (SRC_ROOT / "frameworks/base/libs/androidfw/include/androidfw/ResourceTypes.h").read_text(encoding="utf-8")
+        self.assertNotIn("kaitMutableAttrNameResIdSlot", res_h)
 
     def test_servicemanager_listservices_enforces_can_find_quiet(self) -> None:
         sm_cpp = (SRC_ROOT / "frameworks/native/cmds/servicemanager/ServiceManager.cpp").read_text(encoding="utf-8")
         access_cpp = (SRC_ROOT / "frameworks/native/cmds/servicemanager/Access.cpp").read_text(encoding="utf-8")
         self.assertIn("canFindQuiet", sm_cpp)
         self.assertIn("multiuser_get_app_id(ctx.uid) >= AID_APP", sm_cpp)
-        self.assertIn("avc_has_perm_noaudit", access_cpp)
+        self.assertIn("tQuietSelinuxLog", access_cpp)
+        self.assertNotIn("quietLogCallback", access_cpp)
 
 
 class TestCompiledRomBinarySepolicy(unittest.TestCase):
@@ -540,9 +555,9 @@ class TestCompiledRomBinarySepolicy(unittest.TestCase):
 
         edited_sources: Iterable[Path] = (
             SRC_ROOT / "system/sepolicy/private/su.te",
-            SRC_ROOT / "device/lineage/sepolicy/common/private/fsck_untrusted.te",
-            SRC_ROOT / "device/lineage/sepolicy/common/private/adbroot.te",
-            SRC_ROOT / "device/lineage/sepolicy/common/private/untrusted_app.te",
+            SRC_ROOT / "vendor/yasvara/sepolicy/common/private/fsck_untrusted.te",
+            SRC_ROOT / "vendor/yasvara/sepolicy/common/private/adbroot.te",
+            SRC_ROOT / "vendor/yasvara/sepolicy/common/private/untrusted_app.te",
         )
         pol_mtime = cls.policy_path.stat().st_mtime
         stale = [p for p in edited_sources if p.exists() and p.stat().st_mtime > pol_mtime]

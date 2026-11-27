@@ -10,6 +10,7 @@
 /// Canonical directory owned by init (`02750 system:keystore`, `yasvara_attest_data_file`).
 pub const ATTEST_DIR: &str = "/data/misc/yasvara_attest";
 pub const KEYBOX_FILENAME: &str = "keybox.xml";
+pub const POLICY_FILENAME: &str = "policy.bin";
 pub const TARGETS_FILENAME: &str = "targets";
 pub const PATCH_OVERRIDE_FILENAME: &str = "patch_override";
 pub const LEGACY_KEYBOX_PATH: &str = "/data/system/yasvara/keybox.xml";
@@ -47,6 +48,8 @@ pub const PROP_STEALTH_ENABLED: &str = "persist.sys.yasvara.stealth";
 pub const PROP_TRICKY_ENABLED: &str = "persist.sys.yasvara.trickystore";
 pub const PROP_PATCH_OVERRIDE: &str = "persist.sys.yasvara.trickystore.patch_override";
 pub const PROP_RKP_MANUFACTURER: &str = "persist.sys.yasvara.rkp_manufacturer";
+pub const PROP_RKP_EXEMPT_PREFIX: &str = "persist.sys.yasvara.rkp_exempt.";
+pub const RKP_EXEMPT_MAX_SLOTS: usize = 8;
 pub const PROP_RKP_SPOOF: &str = "persist.sys.yasvara.rkp_spoof";
 pub const PROP_PHOTOS_SPOOF: &str = "persist.sys.yasvara.photos_spoof";
 pub const PROP_SNAP_SPOOF: &str = "persist.sys.yasvara.snap_spoof";
@@ -56,6 +59,7 @@ pub const PROP_SNAP_SPOOF: &str = "persist.sys.yasvara.snap_spoof";
 pub const SECURE_PIF_ENABLED: &str = "yasvara_pif_enabled";
 pub const SECURE_PIF_CONFIG: &str = "yasvara_pif_config";
 pub const SECURE_SPOOF_MODE: &str = "yasvara_spoof_mode";
+pub const SECURE_APP_SPOOF_MAP: &str = "yasvara_app_spoof_map";
 pub const SECURE_PHOTOS_SPOOF: &str = "yasvara_photos_spoof";
 pub const SECURE_SNAP_SPOOF: &str = "yasvara_snap_spoof";
 pub const SECURE_KEYBOX_STAMP: &str = "yasvara_keybox_stamp";
@@ -64,6 +68,13 @@ pub const SECURE_TRICKY_ENABLED: &str = "yasvara_trickystore_enabled";
 pub const SECURE_TRICKY_TARGETS: &str = "yasvara_trickystore_targets";
 pub const SECURE_TRICKY_PATCH_OVERRIDE: &str = "yasvara_trickystore_patch_override";
 pub const SECURE_INTEGRITY_PURGE_GEN: &str = "yasvara_integrity_purge_gen";
+
+/// Obsolete Settings.Secure keys from the removed ladder/rung architecture, deleted once on boot.
+pub const LEGACY_SECURE_KEYS: &[&str] = &[
+    "yasvara_trickystore_rung",
+    "yasvara_trickystore_force",
+    "yasvara_trickystore_tee_reprobe",
+];
 
 /// Core Android / Google / Yasvara package names.
 pub const PKG_GMS: &str = "com.google.android.gms";
@@ -135,6 +146,8 @@ pub const BOOT_STORY: &[(&str, &str)] = &[
     ("sys.usb.state", "mtp"),
     ("sys.usb.config", "mtp"),
     ("persist.sys.usb.config", "mtp"),
+    ("vendor.usb.config", "mtp"),
+    ("persist.vendor.usb.config", "mtp"),
 ];
 
 /// Additional fixed properties served to Play Integrity collectors.
@@ -155,6 +168,7 @@ pub const HIDDEN_PREFIXES: &[&str] = &[
     "sys.yasvara",
     "init.svc.yasvara",
     "init.svc_debug_pid.yasvara",
+    "ro.boottime.yasvara",
 ];
 
 /// Exact properties hidden from app processes.
@@ -163,7 +177,15 @@ pub const HIDDEN_EXACT: &[&str] = &[
     "ro.build.selinux",
     "init.svc.adb_root",
     "init.svc_debug_pid.adb_root",
+    "init.svc_debug_pid.adbd",
+    "ro.boottime.adb_root",
+    "ro.boottime.adbd",
     "service.adb.root",
+    "persist.adb.tls_server.enable",
+    "persist.adb.wifi.guid",
+    "dev.mnt.blk.mnt.scratch",
+    "dev.mnt.dev.mnt.scratch",
+    "dev.mnt.rootdisk.mnt.scratch",
 ];
 
 /// Custom-ROM prefixes stripped when normalizing `*.build.flavor`.
@@ -204,6 +226,7 @@ pub const MAX_PROVISIONING_BYTES: usize = 64 * 1024;
 pub const MAX_CBOR_DEPTH: usize = 32;
 pub const MAX_KEYBOX_BYTES: usize = 800_000;
 pub const MAX_KEYBOX_CHARS: usize = 200_000;
+pub const MAX_POLICY_BYTES: usize = 256 * 1024;
 
 /// Domain-separation prefix for derived verifiedBootKey when hardware reports an all-zero key.
 pub const BOOT_KEY_DERIVE_PREFIX: &[u8] = b"yasvara.verified-boot-key";

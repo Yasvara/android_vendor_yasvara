@@ -37,8 +37,8 @@ reads() {
   case $who in
     app)       args="--uid $APP_UID --name $APP_NAME" ;;
     app_priv)  args="--uid $APP_UID --context u:r:su:s0 --name $APP_NAME" ;;
-    collector) args="--uid $APP_UID --name $COLLECTOR" ;;
-    vending)   args="--uid $APP_UID --name com.android.vending" ;;
+    collector) args="--uid $APP_UID --context u:r:gmscore_app:s0:c512,c768 --name $COLLECTOR" ;;
+    vending)   args="--uid $APP_UID --context u:r:priv_app:s0:c512,c768 --name com.android.vending" ;;
     system)    args="--uid 1000 --context u:r:system_app:s0 --name com.android.settings" ;;
   esac
   out=$(sh_ "$HELPER $args --props $*; echo rc=\$?")

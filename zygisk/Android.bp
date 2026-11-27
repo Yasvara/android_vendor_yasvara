@@ -43,7 +43,7 @@ rust_binary {
     name: "yasvara_zygisk_companion",
     srcs: ["src/companion_bin.rs"],
     edition: "2021",
-    system_ext_specific: true,
+    install_in_xbin: true,
     compile_multilib: "64",
     rustlibs: [
         "liblibc",

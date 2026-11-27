@@ -28,8 +28,9 @@
 /(system_ext|system/system_ext)/etc/selinux/system_ext_sepolicy_and_mapping\.sha256  u:object_r:sepolicy_file:s0
 /(product|system/product)/etc/selinux/product_sepolicy\.cil                          u:object_r:sepolicy_file:s0
 /(product|system/product)/etc/selinux/product_sepolicy_and_mapping\.sha256           u:object_r:sepolicy_file:s0
-# Only init reads it; for apps it would spell out the root daemon.
+# Only init reads these; for apps they would expose root/hide control paths.
 /system/etc/init/yasvara_sessiond\.rc                                                u:object_r:sepolicy_file:s0
+/(system_ext|system/system_ext)/etc/init/init\.yasvara-system_ext\.rc                u:object_r:sepolicy_file:s0
 
 # Hentak catalog scan.
 /(system_ext|system/system_ext)/bin/hentak_scan   u:object_r:hentak_scan_exec:s0

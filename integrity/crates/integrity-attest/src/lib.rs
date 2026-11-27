@@ -7,6 +7,7 @@
 pub mod cache;
 pub mod keybox;
 pub mod patcher;
+pub mod policy;
 
 extern "C" {
     fn yasvara_verify_x509_signature(

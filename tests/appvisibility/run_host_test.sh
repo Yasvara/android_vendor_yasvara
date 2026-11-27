@@ -8,6 +8,8 @@ out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 "$jdk/javac" -d "$out" \
     "$root/frameworks/base/core/java/android/security/yasvara/YasvaraTabirPolicy.java" \
+    "$root/frameworks/base/core/java/android/security/yasvara/YasvaraRiskCacheReset.java" \
     "$root/frameworks/base/services/core/java/com/android/server/yasvara/visibility/AppVisibilityPolicy.java" \
     "$here/AppVisibilityPolicyTest.java"
 "$jdk/java" -cp "$out" AppVisibilityPolicyTest
+python3 "$here/tabir_contract_test.py"

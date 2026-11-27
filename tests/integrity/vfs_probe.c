@@ -6,6 +6,7 @@
 
 #define _GNU_SOURCE
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -17,9 +18,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #ifndef EROFS_SUPER_MAGIC_V1
@@ -70,6 +73,22 @@ static int raw_statfs(const char* path, struct statfs* sfs) {
 
 static int raw_fstatfs(int fd, struct statfs* sfs) {
   return (int)direct_syscall4(__NR_fstatfs, fd, (long)sfs, 0, 0);
+}
+
+static int raw_newfstatat(int dirfd, const char* path, struct stat* st, int flags) {
+  return (int)direct_syscall4(__NR_newfstatat, dirfd, (long)path, (long)st, flags);
+}
+
+static int raw_faccessat(int dirfd, const char* path, int mode) {
+  return (int)direct_syscall4(__NR_faccessat, dirfd, (long)path, mode, 0);
+}
+
+static int raw_getdents64(int fd, void* buf, size_t count) {
+  return (int)direct_syscall4(__NR_getdents64, fd, (long)buf, (long)count, 0);
+}
+
+static int raw_connect(int fd, const void* addr, size_t len) {
+  return (int)direct_syscall4(__NR_connect, fd, (long)addr, (long)len, 0);
 }
 
 static char* read_all_fd(int fd, size_t* out_len, bool use_raw) {
@@ -461,6 +480,123 @@ static int check_statfs_paths(bool is_app) {
   return 0;
 }
 
+struct linux_dirent64_probe {
+  uint64_t d_ino;
+  int64_t d_off;
+  unsigned short d_reclen;
+  unsigned char d_type;
+  char d_name[];
+};
+
+static bool dir_contains_entry(const char* dirpath, const char* target, bool use_raw) {
+  int fd = use_raw ? raw_openat(AT_FDCWD, dirpath, O_RDONLY | O_DIRECTORY)
+                   : open(dirpath, O_RDONLY | O_DIRECTORY);
+  if (fd < 0) return false;
+  char buf[8192];
+  bool found = false;
+  for (;;) {
+    int n = use_raw ? raw_getdents64(fd, buf, sizeof(buf))
+                    : (int)syscall(__NR_getdents64, fd, buf, sizeof(buf));
+    if (n <= 0) break;
+    for (int pos = 0; pos < n;) {
+      struct linux_dirent64_probe* d = (struct linux_dirent64_probe*)(buf + pos);
+      if (d->d_reclen == 0 || pos + d->d_reclen > n) break;
+      if (strcmp(d->d_name, target) == 0) {
+        found = true;
+        break;
+      }
+      pos += d->d_reclen;
+    }
+    if (found) break;
+  }
+  close(fd);
+  return found;
+}
+
+static int check_kernel_policy_and_adb_hide(bool use_raw, bool is_app) {
+  static const char* const kHiddenPaths[] = {
+      "/sys/fs/selinux/policy",
+      "/vendor/etc/selinux/vendor_sepolicy.cil",
+      "/system/addon.d",
+      "/system_ext/bin/adb_root",
+      "/dev/socket/adbd",
+  };
+  for (size_t i = 0; i < sizeof(kHiddenPaths) / sizeof(kHiddenPaths[0]); i++) {
+    const char* p = kHiddenPaths[i];
+    struct stat st;
+    errno = 0;
+    int s_rc = use_raw ? raw_newfstatat(AT_FDCWD, p, &st, 0) : stat(p, &st);
+    int s_err = errno;
+    errno = 0;
+    int a_rc = use_raw ? raw_faccessat(AT_FDCWD, p, F_OK) : access(p, F_OK);
+    int a_err = errno;
+    errno = 0;
+    int o_fd = use_raw ? raw_openat(AT_FDCWD, p, O_RDONLY) : open(p, O_RDONLY);
+    int o_err = errno;
+    if (o_fd >= 0) close(o_fd);
+
+    if (is_app) {
+      if (s_rc != -1 || s_err != ENOENT) {
+        fprintf(stderr, "FAIL(%s): app stat(%s) rc=%d errno=%d (expected ENOENT)\n",
+                use_raw ? "raw" : "libc", p, s_rc, s_err);
+        return 1;
+      }
+      if (a_rc != -1 || a_err != ENOENT) {
+        fprintf(stderr, "FAIL(%s): app access(%s) rc=%d errno=%d (expected ENOENT)\n",
+                use_raw ? "raw" : "libc", p, a_rc, a_err);
+        return 1;
+      }
+      if (o_fd != -1 || o_err != ENOENT) {
+        fprintf(stderr, "FAIL(%s): app open(%s) fd=%d errno=%d (expected ENOENT)\n",
+                use_raw ? "raw" : "libc", p, o_fd, o_err);
+        return 1;
+      }
+    } else {
+      if (s_rc != 0) {
+        fprintf(stderr, "FAIL(%s): daemon stat(%s) failed errno=%d\n",
+                use_raw ? "raw" : "libc", p, s_err);
+        return 1;
+      }
+    }
+  }
+
+  // Directory listing consistency for /system (addon.d), /dev/socket (adbd), /vendor/etc/selinux.
+  bool saw_addon = dir_contains_entry("/system", "addon.d", use_raw);
+  bool saw_adbd = dir_contains_entry("/dev/socket", "adbd", use_raw);
+  bool saw_vsel = dir_contains_entry("/vendor/etc/selinux", "vendor_sepolicy.cil", use_raw);
+  if (is_app && (saw_addon || saw_adbd || saw_vsel)) {
+    fprintf(stderr, "FAIL(%s): app getdents64 leaked addon=%d adbd=%d vsel=%d\n",
+            use_raw ? "raw" : "libc", saw_addon, saw_adbd, saw_vsel);
+    return 1;
+  }
+  if (!is_app && (!saw_addon || !saw_adbd || !saw_vsel)) {
+    fprintf(stderr, "FAIL(%s): daemon getdents64 missing addon=%d adbd=%d vsel=%d\n",
+            use_raw ? "raw" : "libc", saw_addon, saw_adbd, saw_vsel);
+    return 1;
+  }
+
+  // Abstract @jdwp-control connect() must return ECONNREFUSED for app (including raw svc #0).
+  int sfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (sfd >= 0) {
+    struct sockaddr_un un;
+    memset(&un, 0, sizeof(un));
+    un.sun_family = AF_UNIX;
+    un.sun_path[0] = '\0';
+    memcpy(un.sun_path + 1, "jdwp-control", 12);
+    size_t addrlen = offsetof(struct sockaddr_un, sun_path) + 1 + 12;
+    errno = 0;
+    int c_rc = use_raw ? raw_connect(sfd, &un, addrlen) : connect(sfd, (struct sockaddr*)&un, addrlen);
+    int c_err = errno;
+    close(sfd);
+    if (is_app && (c_rc != -1 || c_err != ECONNREFUSED)) {
+      fprintf(stderr, "FAIL(%s): app connect(@jdwp-control) rc=%d errno=%d (expected ECONNREFUSED)\n",
+              use_raw ? "raw" : "libc", c_rc, c_err);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 int main(int argc, char** argv) {
   bool forced_mode = false;
   bool expected_app = ((getuid() % 100000U) >= 10000U);
@@ -543,6 +679,7 @@ int main(int argc, char** argv) {
     fail |= check_mount_stream("/proc/self/mounts", raw != 0, expected_app, 0);
     fail |= check_mount_stream("/proc/self/mountinfo", raw != 0, expected_app, 1);
     fail |= check_mount_stream("/proc/self/mountstats", raw != 0, expected_app, 2);
+    fail |= check_kernel_policy_and_adb_hide(raw != 0, expected_app);
   }
   fail |= check_statfs_paths(expected_app);
 

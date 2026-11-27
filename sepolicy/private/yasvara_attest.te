@@ -1,4 +1,4 @@
-# Keybox and target list shared by system_server (writer) and keystore2 (reader).
+# Keybox and binary policy.bin shared by system_server (writer) and keystore2 (reader).
 # Kept outside keystore_data_file: that tree's neverallows exclude system_server on purpose.
 type yasvara_attest_data_file, file_type, data_file_type, core_data_file_type;
 
@@ -10,3 +10,25 @@ allow keystore yasvara_attest_data_file:file r_file_perms;
 
 neverallow keystore yasvara_attest_data_file:dir ~r_dir_perms;
 neverallow keystore yasvara_attest_data_file:file ~r_file_perms;
+
+# PIF staging properties (persist.sys.yasvara.pif.*): strictly hidden at kernel SELinux layer
+# from untrusted_app / isolated_app raw /dev/__properties__ scanners.
+system_internal_prop(yasvara_pif_prop)
+set_prop(system_server, yasvara_pif_prop)
+get_prop(system_server, yasvara_pif_prop)
+get_prop(keystore, yasvara_pif_prop)
+get_prop(gmscore_app, yasvara_pif_prop)
+get_prop(priv_app_all, yasvara_pif_prop)
+get_prop(platform_app_all, yasvara_pif_prop)
+get_prop(system_app, yasvara_pif_prop)
+get_prop(shell, yasvara_pif_prop)
+neverallow untrusted_app_all yasvara_pif_prop:file { open read map };
+
+# Integrity control properties (persist.sys.yasvara.* excluding .pif.*):
+# isolated out of system_prop; writable ONLY by system_server, readable by appdomain (libc.so,
+# including vendor apps — hence system_restricted_prop rather than system_internal_prop).
+system_restricted_prop(yasvara_integrity_prop)
+set_prop(system_server, yasvara_integrity_prop)
+get_prop(system_server, yasvara_integrity_prop)
+get_prop(keystore, yasvara_integrity_prop)
+get_prop(appdomain, yasvara_integrity_prop)

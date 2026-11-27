@@ -7,8 +7,8 @@
 
 use crate::contract::{
     BOOT_STORY, CAMERA_EXEMPT_PREFIXES, COLLECTOR_STORY, HIDDEN_EXACT, HIDDEN_PREFIXES,
-    PROP_BOOT_VBMETA_DIGEST, PROP_PIF_PREFIX, PROP_RKP_MANUFACTURER, PUBLIC_YASVARA_PROPS,
-    RKP_MFG_EXEMPT_EXACT, ROM_FLAVOR_PREFIXES,
+    PROP_BOOT_VBMETA_DIGEST, PROP_PIF_PREFIX, PROP_RKP_EXEMPT_PREFIX, PROP_RKP_MANUFACTURER,
+    PUBLIC_YASVARA_PROPS, RKP_MFG_EXEMPT_EXACT, ROM_FLAVOR_PREFIXES,
 };
 
 /// Process role bitmask cached once per PID in Bionic.
@@ -67,7 +67,7 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Fast 3-byte prefix filter covering 100% of properties Yasvara ever hides, overrides,
-/// or normalizes (`ro.`, `per`, `ini`, `sys`, `ser`, `ven`).
+/// or normalizes (`ro.`, `per`, `ini`, `sys`, `ser`, `ven`, `dev`).
 #[inline]
 pub fn may_intercept(name: &[u8]) -> bool {
     if name.len() < 3 {
@@ -79,6 +79,7 @@ pub fn may_intercept(name: &[u8]) -> bool {
         b'i' => name[1] == b'n' && name[2] == b'i',
         b's' => (name[1] == b'y' && name[2] == b's') || (name[1] == b'e' && name[2] == b'r'),
         b'v' => name[1] == b'e' && name[2] == b'n',
+        b'd' => name[1] == b'e' && name[2] == b'v',
         _ => false,
     }
 }
@@ -147,6 +148,26 @@ pub fn is_pif_staging(name: &[u8]) -> bool {
 #[inline]
 pub fn is_rkp_mfg_staging(name: &[u8]) -> bool {
     bytes_eq(name, PROP_RKP_MANUFACTURER.as_bytes())
+        || starts_with(name, PROP_RKP_EXEMPT_PREFIX.as_bytes())
+}
+
+/// Zero-allocation exact token match in a comma-separated ASCII package list.
+pub fn csv_contains_token(csv: &[u8], token: &[u8]) -> bool {
+    if token.is_empty() || csv.is_empty() {
+        return false;
+    }
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i <= csv.len() {
+        if i == csv.len() || csv[i] == b',' {
+            if i > start && bytes_eq(&csv[start..i], token) {
+                return true;
+            }
+            start = i + 1;
+        }
+        i += 1;
+    }
+    false
 }
 
 pub fn is_hidden_marker(name: &[u8]) -> bool {
@@ -205,7 +226,7 @@ pub fn boot_story_value_cstr(index: usize) -> Option<&'static [u8]> {
         7 => Some(b"enforcing\0"),
         9 => Some(b"encrypted\0"),
         10 => Some(b"stopped\0"),
-        11 | 12 | 13 => Some(b"mtp\0"),
+        11 | 12 | 13 | 14 | 15 => Some(b"mtp\0"),
         _ => None,
     }
 }
@@ -373,12 +394,22 @@ mod tests {
 
     #[test]
     fn boot_story_table_alignment() {
-        assert_eq!(BOOT_STORY.len(), 14);
+        assert_eq!(BOOT_STORY.len(), 16);
         for (i, &(k, v)) in BOOT_STORY.iter().enumerate() {
+            assert!(may_intercept(k.as_bytes()), "may_intercept missed BOOT_STORY key: {k}");
             assert_eq!(find_boot_story(k.as_bytes()), Some(i));
             let cstr = boot_story_value_cstr(i).unwrap();
             assert_eq!(&cstr[..cstr.len() - 1], v.as_bytes());
             assert_eq!(*cstr.last().unwrap(), 0);
+        }
+        for &(k, _) in COLLECTOR_STORY {
+            assert!(may_intercept(k.as_bytes()), "may_intercept missed COLLECTOR_STORY key: {k}");
+        }
+        for &p in HIDDEN_PREFIXES {
+            assert!(may_intercept(p.as_bytes()), "may_intercept missed HIDDEN_PREFIXES entry: {p}");
+        }
+        for &k in HIDDEN_EXACT {
+            assert!(may_intercept(k.as_bytes()), "may_intercept missed HIDDEN_EXACT key: {k}");
         }
     }
 
@@ -394,6 +425,17 @@ mod tests {
         assert!(is_hidden_marker(b"ro.yasvara.version"));
         assert!(is_hidden_marker(b"persist.sys.yasvara.trickystore"));
         assert!(is_hidden_marker(b"ro.lineage.build.version"));
+        assert!(is_hidden_marker(b"ro.boottime.adb_root"));
+        assert!(is_hidden_marker(b"ro.boottime.adbd"));
+        assert!(is_hidden_marker(b"init.svc_debug_pid.adbd"));
+        assert!(is_hidden_marker(b"persist.adb.tls_server.enable"));
+        assert!(is_hidden_marker(b"persist.adb.wifi.guid"));
+        assert!(is_hidden_marker(b"dev.mnt.blk.mnt.scratch"));
+        assert!(is_hidden_marker(b"dev.mnt.dev.mnt.scratch"));
+        assert!(is_hidden_marker(b"dev.mnt.rootdisk.mnt.scratch"));
+        assert!(is_hidden_marker(b"ro.boottime.yasvara_sessiond"));
+        assert!(!is_hidden_marker(b"ro.boottime.init"));
+        assert!(!is_hidden_marker(b"dev.mnt.blk.data"));
     }
 
     #[test]

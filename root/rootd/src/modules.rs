@@ -560,13 +560,26 @@ pub fn publish_zygisk_set(data_dir: &Path, safe_bypass: bool) -> io::Result<()> 
     r
 }
 
-/// What the kernel hide filters must cover. Mounts: an active module (its overlays and
-/// whatever its scripts mount). Maps: a Zygisk module that may load. Engine off, safe mode
-/// or no module leaves both off, so `mountinfo` and `maps` reads cost what stock costs.
+/// What the kernel hide filters must cover. Mounts: an active module that either mounted
+/// overlays (`mounts.set` has paths) or ships a boot script that may mount directly. Maps:
+/// a Zygisk module that may load. Engine off, safe mode, or pure no-mount/Zygisk-only setups
+/// leave unused filters off, so `mountinfo` and `maps` reads cost what stock costs.
 pub fn hide_bits(data_dir: &Path) -> u32 {
     let mut bits = 0;
-    if data_dir.join("mounts.set").exists() && !enabled_module_dirs(data_dir).is_empty() {
-        bits |= sys::HIDE_MOUNTS;
+    let mounts_path = data_dir.join("mounts.set");
+    if let Ok(raw) = fs::read(&mounts_path) {
+        let active = enabled_module_dirs(data_dir);
+        if !active.is_empty() {
+            let has_mounts = MountsSet::decode(&raw).is_ok_and(|m| !m.paths.is_empty());
+            let has_boot_script = active.iter().any(|d| {
+                ["post-fs-data.sh", "post-mount.sh", "service.sh", "boot-completed.sh", "metamount.sh"]
+                    .iter()
+                    .any(|s| d.join(s).is_file())
+            });
+            if has_mounts || has_boot_script {
+                bits |= sys::HIDE_MOUNTS;
+            }
+        }
     }
     let zygisk_live = fs::read(data_dir.join("zygisk.set"))
         .ok()
@@ -1108,6 +1121,7 @@ pub fn set_module_remove(data_dir: &Path, id: &str, remove: bool) -> io::Result<
     } else {
         let _ = fs::remove_file(flag);
     }
+    let _ = publish_zygisk_set(data_dir, bootguard::read_status(data_dir).safe_mode);
     Ok(())
 }
 
@@ -1371,6 +1385,7 @@ mod tests {
             ("module.prop", &p),
             ("customize.sh", b"ui_print \"customizing $ARCH\"\n"),
             ("action.sh", b"echo action-ran\n"),
+            ("post-fs-data.sh", b":\n"),
         ])
         .unwrap();
         assert_eq!(prop.id, "hello_mod");
@@ -1413,6 +1428,46 @@ mod tests {
         assert!(!data.join("mounts.set").exists(), "disabled engine must leave zero mounts.set");
         assert!(!data.join("zygisk.set").exists(), "disabled engine must leave zero zygisk.set");
         assert_eq!(hide_bits(&data), 0, "engine off: both kernel filters off");
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn hide_bits_skips_mount_filter_when_mounts_empty_and_remove_updates_zygisk_set() {
+        let t = tmp("zygisk_only_remove");
+        let data = t.join("data");
+        let meta = t.join("meta");
+        let mdir = data.join("modules/zonly");
+        fs::create_dir_all(mdir.join("zygisk")).unwrap();
+        fs::write(mdir.join("module.prop"), prop("zonly", "")).unwrap();
+        fs::write(mdir.join("zygisk/arm64-v8a.so"), b"\x7fELF").unwrap();
+        set_module_engine_enabled(&data, true).unwrap();
+        fs::write(data.join("zygisk.conf"), "enabled=1\n").unwrap();
+
+        // Boot stage writes an empty mounts.set (no overlays, no boot scripts) + live zygisk.set.
+        stage_post_fs_data(&data, Some(&meta), true).unwrap();
+        assert_eq!(
+            hide_bits(&data),
+            sys::HIDE_MAPS,
+            "mountless Zygisk-only module must NOT pay HIDE_MOUNTS overhead"
+        );
+
+        // If mounts.set carries a real mount path, HIDE_MOUNTS turns on.
+        let non_empty = MountsSet { paths: vec!["/system/etc".to_string()] };
+        fs::write(data.join("mounts.set"), non_empty.encode()).unwrap();
+        assert_eq!(hide_bits(&data), sys::HIDE_MOUNTS | sys::HIDE_MAPS);
+        fs::write(data.join("mounts.set"), MountsSet::default().encode()).unwrap();
+
+        // Marking a Zygisk module for removal must drop it from zygisk.set immediately (BUG-M1).
+        set_module_remove(&data, "zonly", true).unwrap();
+        let set_after_remove = ZygiskSet::decode(&fs::read(data.join("zygisk.set")).unwrap()).unwrap();
+        assert!(set_after_remove.modules.is_empty(), "removed module must leave zygisk.set immediately");
+        assert_eq!(hide_bits(&data), 0, "no active Zygisk module left -> maps filter off");
+
+        // Undoing uninstall restores it to zygisk.set immediately.
+        set_module_remove(&data, "zonly", false).unwrap();
+        let set_after_undo = ZygiskSet::decode(&fs::read(data.join("zygisk.set")).unwrap()).unwrap();
+        assert_eq!(set_after_undo.modules.len(), 1);
+        assert_eq!(hide_bits(&data), sys::HIDE_MAPS);
         let _ = fs::remove_dir_all(&t);
     }
 

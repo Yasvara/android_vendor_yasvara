@@ -7,7 +7,7 @@
 //! `yasvara_integrity_attest`.
 
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString};
-use jni::sys::{jboolean, jbyteArray, jint, jobjectArray, jstring, JNI_FALSE};
+use jni::sys::{jboolean, jbyteArray, jint, jlong, jobjectArray, jstring, JNI_FALSE};
 use jni::JNIEnv;
 
 use yasvara_integrity_attest::keybox::{inspect_keybox, json_escape};
@@ -16,6 +16,9 @@ use yasvara_integrity_core::contract::KEYBOX_ERR_NONE;
 use yasvara_integrity_core::digest::{encode_boot_digest, normalize_boot_digest, select_boot_digest};
 use yasvara_integrity_core::patch_override::global_patch_override;
 use yasvara_integrity_core::pif::normalize_pif;
+use yasvara_integrity_core::policy::{
+    extract_app_spoof_packages, pack_rkp_exempt_slots, PolicyCompileInput, PolicySnapshot,
+};
 use yasvara_integrity_core::version::{
     infer_release_from_fingerprint_or_platform, infer_version_from_build_id,
 };
@@ -220,4 +223,73 @@ pub extern "system" fn Java_com_android_server_yasvara_YasvaraIntegrityNative_na
     .map(|m| m.to_string())
     .unwrap_or_default();
     to_jstr(&env, &out)
+}
+
+/// Compiles normalized integrity policy into the atomic `YVPI` binary snapshot published at
+/// `/data/misc/yasvara_attest/policy.bin` for `keystore2`.
+#[no_mangle]
+pub extern "system" fn Java_com_android_server_yasvara_YasvaraIntegrityNative_nativeCompilePolicySnapshot<'l>(
+    mut env: JNIEnv<'l>,
+    _: JClass<'l>,
+    tricky_enabled: jboolean,
+    pif_enabled: jboolean,
+    akar_yielded: jboolean,
+    generation: jlong,
+    raw_pif: JString<'l>,
+    platform_release: JString<'l>,
+    rkp_manufacturer: JString<'l>,
+    targets_arr: JObjectArray<'l>,
+    raw_patch_override_json: JString<'l>,
+    raw_app_spoof_map_json: JString<'l>,
+) -> jbyteArray {
+    let pif_str = jstr(&mut env, &raw_pif);
+    let plat_str = jstr(&mut env, &platform_release);
+    let rkp_mfg = jstr(&mut env, &rkp_manufacturer);
+    let po_json = jstr(&mut env, &raw_patch_override_json);
+    let spoof_json = jstr(&mut env, &raw_app_spoof_map_json);
+
+    let mut targets = Vec::new();
+    if !targets_arr.is_null() {
+        if let Ok(len) = env.get_array_length(&targets_arr) {
+            let cap = (len.max(0) as usize).min(512);
+            targets.reserve(cap);
+            for i in 0..cap as i32 {
+                if let Ok(obj) = env.get_object_array_element(&targets_arr, i) {
+                    let s = JString::from(obj);
+                    let val = jstr(&mut env, &s);
+                    if !val.trim().is_empty() {
+                        targets.push(val);
+                    }
+                }
+            }
+        }
+    }
+
+    let snap = PolicySnapshot::compile(&PolicyCompileInput {
+        tricky_enabled: tricky_enabled != JNI_FALSE,
+        pif_enabled: pif_enabled != JNI_FALSE,
+        akar_yielded: akar_yielded != JNI_FALSE,
+        generation: generation.max(0) as u64,
+        raw_pif: &pif_str,
+        platform_release: &plat_str,
+        rkp_manufacturer: &rkp_mfg,
+        targets: &targets,
+        raw_patch_override_json: &po_json,
+        raw_app_spoof_map_json: &spoof_json,
+    });
+    to_jbytes(&env, &snap.encode())
+}
+
+/// Extracts assigned packages from `yasvara_app_spoof_map` JSON and packs them into
+/// `RKP_EXEMPT_MAX_SLOTS` comma-separated slots (`<= 91` bytes each) for `integrity-bionic`.
+#[no_mangle]
+pub extern "system" fn Java_com_android_server_yasvara_YasvaraIntegrityNative_nativePackRkpExemptSlots<'l>(
+    mut env: JNIEnv<'l>,
+    _: JClass<'l>,
+    raw_app_spoof_map_json: JString<'l>,
+) -> jobjectArray {
+    let raw = jstr(&mut env, &raw_app_spoof_map_json);
+    let pkgs = extract_app_spoof_packages(&raw);
+    let slots = pack_rkp_exempt_slots(&pkgs);
+    to_string_array(&mut env, &slots)
 }

@@ -174,13 +174,26 @@ impl Maps {
             let (maj, min) = dev.split_once(':').unwrap_or(("0", "0"));
             let maj = u32::from_str_radix(maj, 16).unwrap_or(0);
             let min = u32::from_str_radix(min, 16).unwrap_or(0);
+            let ino: u64 = ino.parse().unwrap_or(0);
+            let path = if ino == 0 {
+                String::new()
+            } else {
+                let mut s = String::new();
+                for tok in it {
+                    if !s.is_empty() {
+                        s.push(' ');
+                    }
+                    s.push_str(tok);
+                }
+                s
+            };
             out.push(MapEntry {
                 start,
                 end,
                 prot,
                 dev: libc::makedev(maj, min) as u64,
-                ino: ino.parse().unwrap_or(0),
-                path: it.collect::<Vec<_>>().join(" "),
+                ino,
+                path,
             });
         }
         Self(out)
@@ -298,9 +311,14 @@ mod elf_arch {
 }
 
 
+fn page_size() -> usize {
+    static PAGE_SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *PAGE_SIZE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_PAGESIZE).max(4096) as usize })
+}
+
 /// Swaps one GOT slot and returns its previous value, restoring `restore` afterwards.
 unsafe fn patch_got_slot(slot_addr: usize, new_fn: usize, restore: i32) -> Option<usize> {
-    let page_size = libc::sysconf(libc::_SC_PAGESIZE).max(4096) as usize;
+    let page_size = page_size();
     let page_start = slot_addr & !(page_size - 1);
     if libc::mprotect(page_start as *mut c_void, page_size, libc::PROT_READ | libc::PROT_WRITE) != 0 {
         return None;
@@ -461,13 +479,16 @@ unsafe fn apply_packed_rela(
     }
     let mut p = 4usize;
     let Some(num_relocs) = pop_sleb(bytes, &mut p) else { return };
+    if (num_relocs as i64) < 0 {
+        return;
+    }
     let Some(mut offset) = pop_sleb(bytes, &mut p) else { return };
     let mut info: u64 = 0;
     let mut done = 0u64;
     while done < num_relocs {
         let Some(group_size) = pop_sleb(bytes, &mut p) else { return };
         let Some(group_flags) = pop_sleb(bytes, &mut p) else { return };
-        if group_size == 0 {
+        if (group_size as i64) <= 0 {
             return;
         }
         let mut group_delta = 0u64;
@@ -519,6 +540,9 @@ fn pop_sleb(bytes: &[u8], p: &mut usize) -> Option<u64> {
         result |= ((byte & 0x7f) as u64) << shift;
         shift += 7;
         if byte & 0x80 == 0 {
+            if shift < 64 && (byte & 0x40) != 0 {
+                result |= !0u64 << shift;
+            }
             return Some(result);
         }
     }
@@ -556,6 +580,54 @@ mod tests {
         assert_eq!(m.dev_ino(0x1000, "/system/lib64/libc.so"), Some(want));
         assert_eq!(m.dev_ino(0x7a0000040000, "/memfd:jit-cache (deleted)"), Some((libc::makedev(0, 1) as u64, 99)));
         assert_eq!(m.dev_ino(0x7a0000030000, ""), None);
+    }
+
+    #[test]
+    fn sleb128_sign_extends_negative_deltas() {
+        let enc = |val: i64| -> Vec<u8> {
+            let mut out = Vec::new();
+            let mut v = val;
+            loop {
+                let mut byte = (v & 0x7f) as u8;
+                v >>= 7;
+                let done = (v == 0 && (byte & 0x40) == 0) || (v == -1 && (byte & 0x40) != 0);
+                if !done {
+                    byte |= 0x80;
+                }
+                out.push(byte);
+                if done {
+                    break;
+                }
+            }
+            out
+        };
+        for sample in [0i64, 1, 63, 64, 127, 128, -1, -8, -64, -65, -128, -4096, i64::MAX, i64::MIN] {
+            let bytes = enc(sample);
+            let mut p = 0;
+            let got = pop_sleb(&bytes, &mut p).expect("valid sleb128");
+            assert_eq!(p, bytes.len());
+            assert_eq!(got as i64, sample, "mismatch for {sample}");
+        }
+        // Negative delta wrapping_add moves relocation offset backward accurately (BUG-Z2).
+        let base_off: u64 = 0x2000;
+        let neg8 = enc(-8);
+        let mut p = 0;
+        let delta = pop_sleb(&neg8, &mut p).unwrap();
+        assert_eq!(base_off.wrapping_add(delta), 0x1ff8);
+
+        // Truncated stream returns None instead of panicking.
+        let mut p = 0;
+        assert_eq!(pop_sleb(&[0x80], &mut p), None);
+    }
+
+    #[test]
+    fn maps_skips_path_alloc_for_anonymous_entries() {
+        let anon_maps = "7a0000000000-7a0000001000 rw-p 00000000 00:00 0 [anon:dalvik-main space]\n";
+        let m = Maps::parse(anon_maps);
+        assert_eq!(m.0.len(), 1);
+        assert_eq!(m.0[0].ino, 0);
+        assert!(m.0[0].path.is_empty());
+        assert_eq!(m.prot_at(0x7a0000000008), libc::PROT_READ | libc::PROT_WRITE);
     }
 
     #[test]

@@ -28,6 +28,7 @@ const XRESOURCES_CLASS: &str = "android.content.res.XResources";
 
 const KAIT_OPS_MAGIC: jint = 0x594B_4149; // 'YKAI'
 const KAIT_OPS_ABI_VERSION: u32 = 1;
+const KAIT_XML_OPS_ABI_VERSION: u32 = 1;
 
 #[allow(dead_code)]
 const ANDROID_LOG_DEBUG: c_int = 3;
@@ -69,6 +70,21 @@ struct KaitArtOps {
     get_method_shorty: unsafe extern "C" fn(*mut JNIEnv, jobject, *mut c_char, usize) -> usize,
     get_art_method_ptr: unsafe extern "C" fn(*mut JNIEnv, jobject) -> usize,
     is_proxy_method: unsafe extern "C" fn(*mut JNIEnv, jobject) -> jboolean,
+}
+
+/// Private ResXML helper vtable handed from Zygote (`libandroid_runtime`), avoiding any
+/// exported `yasvara_kait_*` symbols on `libandroidfw.so`.
+#[repr(C)]
+pub struct KaitResXmlOps {
+    version: u32,
+    reserved: u32,
+    next: unsafe extern "C" fn(*mut c_void) -> i32,
+    restart: unsafe extern "C" fn(*mut c_void),
+    cur_ext: unsafe extern "C" fn(*mut c_void) -> *const c_void,
+    attr_name_id: unsafe extern "C" fn(*mut c_void, usize) -> i32,
+    attr_name_res_id: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+    mutable_attr_slot: unsafe extern "C" fn(*mut c_void, i32) -> *mut u32,
+    attr_name_utf16: unsafe extern "C" fn(*mut c_void, i32, *mut usize) -> *const u16,
 }
 
 struct SendPtr<T>(*mut T);
@@ -153,6 +169,7 @@ struct XmlApi {
 
 static ATTACHED: AtomicBool = AtomicBool::new(false);
 static ART_OPS: OnceLock<SendConstPtr<KaitArtOps>> = OnceLock::new();
+static XML_OPS: OnceLock<SendConstPtr<KaitResXmlOps>> = OnceLock::new();
 static CACHED_JNI: OnceLock<CachedJni> = OnceLock::new();
 static XML_API: OnceLock<XmlApi> = OnceLock::new();
 static HOOK_REGISTRY: OnceLock<HookRegistry<GlobalObj, GlobalObj, GlobalObj>> = OnceLock::new();
@@ -1514,33 +1531,19 @@ unsafe extern "C" fn jni_init_xresources_native(env: *mut JNIEnv, _cls: jclass) 
         return JNI_FALSE;
     };
 
-    let p_next = unsafe { dlsym_default(b"yasvara_kait_xml_next\0") };
-    let p_restart = unsafe { dlsym_default(b"yasvara_kait_xml_restart\0") };
-    let p_cur_ext = unsafe { dlsym_default(b"yasvara_kait_xml_cur_ext\0") };
-    let p_attr_id = unsafe { dlsym_default(b"yasvara_kait_xml_attr_name_id\0") };
-    let p_attr_res = unsafe { dlsym_default(b"yasvara_kait_xml_attr_name_res_id\0") };
-    let p_slot = unsafe { dlsym_default(b"yasvara_kait_xml_mutable_attr_slot\0") };
-    let p_utf16 = unsafe { dlsym_default(b"yasvara_kait_xml_attr_name_utf16\0") };
-    if p_next.is_null()
-        || p_restart.is_null()
-        || p_cur_ext.is_null()
-        || p_attr_id.is_null()
-        || p_attr_res.is_null()
-        || p_slot.is_null()
-        || p_utf16.is_null()
-    {
-        log_e!("initXResourcesNative: androidfw Kait helpers unavailable");
+    let Some(xml_ops) = XML_OPS.get().map(|p| unsafe { &*p.0 }) else {
+        log_e!("initXResourcesNative: androidfw Kait ops table unavailable");
         return JNI_FALSE;
-    }
+    };
 
     let _ = XML_API.set(XmlApi {
-        next: unsafe { std::mem::transmute(p_next) },
-        restart: unsafe { std::mem::transmute(p_restart) },
-        cur_ext: unsafe { std::mem::transmute(p_cur_ext) },
-        attr_name_id: unsafe { std::mem::transmute(p_attr_id) },
-        attr_name_res_id: unsafe { std::mem::transmute(p_attr_res) },
-        mutable_attr_slot: unsafe { std::mem::transmute(p_slot) },
-        attr_name_utf16: unsafe { std::mem::transmute(p_utf16) },
+        next: xml_ops.next,
+        restart: xml_ops.restart,
+        cur_ext: xml_ops.cur_ext,
+        attr_name_id: xml_ops.attr_name_id,
+        attr_name_res_id: xml_ops.attr_name_res_id,
+        mutable_attr_slot: xml_ops.mutable_attr_slot,
+        attr_name_utf16: xml_ops.attr_name_utf16,
         cls_xresources: SendPtr(cls_xres),
         mid_translate_res_id: SendPtr(mid_res),
         mid_translate_attr_id: SendPtr(mid_attr),
@@ -1998,9 +2001,16 @@ pub unsafe extern "C" fn yasvara_kait_attach(
     nice_name: jstring,
     app_data_dir: jstring,
     is_system_server: jboolean,
+    xml_ops: *const KaitResXmlOps,
 ) -> jboolean {
     if env.is_null() || ATTACHED.swap(true, Ordering::AcqRel) {
         return JNI_FALSE;
+    }
+    if !xml_ops.is_null() {
+        let ops_ref = unsafe { &*xml_ops };
+        if ops_ref.version == KAIT_XML_OPS_ABI_VERSION {
+            let _ = XML_OPS.set(SendConstPtr(xml_ops));
+        }
     }
 
     let f = unsafe { jni_fn(env) };

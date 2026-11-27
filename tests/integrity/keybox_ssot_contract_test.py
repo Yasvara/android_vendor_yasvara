@@ -31,10 +31,13 @@ class KeyboxSsot(unittest.TestCase):
         self.assertIn(f'ATTEST_DIR: &str = "{DIR}"', read(CONTRACT_RS))
         self.assertIn(f'Paths.get("{DIR}")', read(STORE))
         self.assertIn("{ATTEST_DIR}/{KEYBOX_FILENAME}", read(KEYBOX_RS))
-        self.assertIn("{ATTEST_DIR}/{TARGETS_FILENAME}", read(MOD_RS))
-        self.assertIn("{ATTEST_DIR}/{PATCH_OVERRIDE_FILENAME}", read(MOD_RS))
-        self.assertIn("YasvaraIntegrityContract.TARGETS_FILENAME", read(SERVICE))
-        self.assertIn("YasvaraIntegrityContract.PATCH_OVERRIDE_FILENAME", read(SERVICE))
+        self.assertIn(
+            "{ATTEST_DIR}/{POLICY_FILENAME}",
+            read("vendor/yasvara/integrity/crates/integrity-attest/src/policy.rs"),
+        )
+        self.assertIn("YasvaraIntegrityContract.POLICY_FILENAME", read(SERVICE))
+        self.assertIn("publishPolicySnapshot", read(SERVICE))
+        self.assertIn("attest_policy::current()", read(MOD_RS))
 
     def test_no_keystore_tree_mirror(self):
         for rel in (SERVICE, STORE):
@@ -54,6 +57,13 @@ class KeyboxSsot(unittest.TestCase):
         self.assertRegex(te, r"allow system_server yasvara_attest_data_file:file create_file_perms")
         self.assertRegex(te, r"allow keystore yasvara_attest_data_file:file r_file_perms")
         self.assertNotRegex(te, r"allow keystore yasvara_attest_data_file:\w+ [^;]*(write|create|unlink|rename)")
+        self.assertIn("system_internal_prop(yasvara_pif_prop)", te)
+        self.assertIn("system_restricted_prop(yasvara_integrity_prop)", te)
+        self.assertIn("neverallow untrusted_app_all yasvara_pif_prop:file", te)
+        prop_ctx = read(f"{SEPOLICY}/property_contexts")
+        self.assertIn("persist.sys.yasvara.pif.", prop_ctx)
+        self.assertIn("u:object_r:yasvara_pif_prop:s0", prop_ctx)
+        self.assertIn("u:object_r:yasvara_integrity_prop:s0", prop_ctx)
         self.assertNotIn("yasvara", read("system/sepolicy/private/keystore.te"))
 
     def test_control_plane_single_source(self):
@@ -63,7 +73,11 @@ class KeyboxSsot(unittest.TestCase):
         self.assertIn("PROP_TRICKY_ENABLED", read(MOD_RS))
         self.assertIn("YasvaraIntegrityContract.SECURE_TRICKY_TARGETS", service)
         self.assertIn("YasvaraIntegrityContract.SECURE_INTEGRITY_PURGE_GEN", service)
+        self.assertIn("YasvaraIntegrityContract.SECURE_APP_SPOOF_MAP", service)
         self.assertIn("YasvaraIntegrityNative.nativeInspectKeybox", service)
+        self.assertIn("YasvaraIntegrityNative.nativeCompilePolicySnapshot", service)
+        self.assertIn("YasvaraIntegrityNative.nativePackRkpExemptSlots", service)
+        self.assertIn("cleanupLegacySettings", service)
         self.assertIn("purgeIntegrityCache", service)
         self.assertIn("getStatus", service)
         self.assertIn("onBootDigestPublished", service)
@@ -72,6 +86,10 @@ class KeyboxSsot(unittest.TestCase):
         spoof = read("frameworks/base/core/java/android/security/yasvara/YasvaraSpoofEngine.java")
         for token in ("droid_guard", "key_attestation", "device_verification", "writeStampAtomic"):
             self.assertIn(token, spoof)
+        # Signed DroidGuard VM bytecode caches must NOT be purged (prevents cold-VM BASIC on Check #1).
+        purge_body = spoof[spoof.index("void purgeIntegrityDirs("):spoof.index("void purgeMatchingEntries(")]
+        self.assertNotIn('deleteDirRecursive(new File(rootDir, "app_dgp"))', purge_body)
+        self.assertNotIn('deleteDirRecursive(new File(rootDir, "app_dg_cache"))', purge_body)
         # Dead Java fallback classes and obsolete RungStore must remain purged.
         core = ROOT / "frameworks/base/core/java/android/security/yasvara"
         for purged in (

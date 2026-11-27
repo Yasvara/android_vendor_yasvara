@@ -17,6 +17,7 @@ pub mod plt;
 
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::os::unix::io::RawFd;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 
 use yasvara_root_proto::mounts::{ZygiskSet, SCOPE_ALL_NON_DENYLIST};
@@ -32,11 +33,47 @@ pub const COMPANION_MAGIC: [u8; 4] = *b"AKZC";
 const COMPANION_SOCK_PRIMARY: &str = "/data/misc/yasvara_root/run/zygisk.sock";
 const COMPANION_SOCK_PROJECTED: &str = "/system/xbin/.s/zygisk.sock";
 
-/// Minimal JNIEnv function table offsets needed for `hookJniNativeMethods`:
-/// `FindClass` = index 6, `ExceptionClear` = index 17, `RegisterNatives` = index 215.
+/// Minimal JNIEnv / JavaVM function table offsets needed for `hookJniNativeMethods`:
+/// `FindClass` = 6, `ExceptionClear` = 17, `RegisterNatives` = 215, `GetJavaVM` = 219;
+/// `JavaVM::GetEnv` = 6.
 const JNI_FIND_CLASS_IDX: usize = 6;
 const JNI_EXCEPTION_CLEAR_IDX: usize = 17;
 const JNI_REGISTER_NATIVES_IDX: usize = 215;
+const JNI_GET_JAVA_VM_IDX: usize = 219;
+const JAVA_VM_GET_ENV_IDX: usize = 6;
+/// One-shot UID-0-only magic recognized by ART `JavaVMExt::HandleGetEnv` (`'YZJH'`).
+/// Replaces any exported `yasvara_zygisk_hook_jni` symbol on `libart.so`.
+const ZYGISK_HOOK_JNI_MAGIC: c_int = 0x595A_4A48;
+
+static ART_HOOK_JNI: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Claims the hidden ART JNI-hook function pointer once during `yasvara_zygisk_pre`
+/// (while the forked Zygote child still has UID 0). Never reachable by app code.
+unsafe fn claim_art_hook_jni(env: JniEnvPtr) {
+    if !ART_HOOK_JNI.load(Ordering::Acquire).is_null() || env.is_null() {
+        return;
+    }
+    let vtable = *(env as *const *const *const c_void);
+    if vtable.is_null() {
+        return;
+    }
+    type GetJavaVmFn = unsafe extern "C" fn(JniEnvPtr, *mut *mut c_void) -> c_int;
+    type GetEnvFn = unsafe extern "C" fn(*mut c_void, *mut *mut c_void, c_int) -> c_int;
+    let get_java_vm: GetJavaVmFn = std::mem::transmute(*vtable.add(JNI_GET_JAVA_VM_IDX));
+    let mut vm: *mut c_void = std::ptr::null_mut();
+    if get_java_vm(env, &mut vm) != 0 || vm.is_null() {
+        return;
+    }
+    let vm_vtable = *(vm as *const *const *const c_void);
+    if vm_vtable.is_null() {
+        return;
+    }
+    let get_env: GetEnvFn = std::mem::transmute(*vm_vtable.add(JAVA_VM_GET_ENV_IDX));
+    let mut raw: *mut c_void = std::ptr::null_mut();
+    if get_env(vm, &mut raw, ZYGISK_HOOK_JNI_MAGIC) == 0 && !raw.is_null() {
+        ART_HOOK_JNI.store(raw, Ordering::Release);
+    }
+}
 
 struct LoadedModule {
     id: String,
@@ -125,7 +162,8 @@ unsafe extern "C" fn api_hook_jni_native_methods(
         }
         return;
     }
-    // libart exports this. It swaps the ArtMethod JNI entry and returns the previous one.
+    // Private ART JNI-hook function claimed once during yasvara_zygisk_pre (UID 0).
+    // Zero exported symbols on libart.so.
     type ArtHook = unsafe extern "C" fn(
         JniEnvPtr,
         *mut c_void,
@@ -133,10 +171,7 @@ unsafe extern "C" fn api_hook_jni_native_methods(
         *const c_char,
         *mut c_void,
     ) -> *mut c_void;
-    let art_hook = libc::dlsym(
-        libc::RTLD_DEFAULT,
-        c"yasvara_zygisk_hook_jni".as_ptr(),
-    );
+    let art_hook = ART_HOOK_JNI.load(Ordering::Acquire);
     if !art_hook.is_null() {
         let hook: ArtHook = std::mem::transmute(art_hook);
         for i in 0..num_methods {
@@ -405,6 +440,12 @@ pub unsafe extern "C" fn yasvara_zygisk_pre(
         return 0;
     }
 
+    // Claim the one-shot hidden ART JNI-hook helper while still UID 0 so both
+    // preAppSpecialize and postAppSpecialize can call hookJniNativeMethods cleanly.
+    if !set.modules.is_empty() {
+        claim_art_hook_jni(env);
+    }
+
     let app_id = uid % 100_000;
     let mut state_flags = 0u32;
     if is_enrolled_root {
@@ -527,4 +568,90 @@ pub unsafe extern "C" fn yasvara_zygisk_post(
         }
     });
     !loaded.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicI32, AtomicUsize};
+
+    static SEEN_MAGIC: AtomicI32 = AtomicI32::new(0);
+    static HOOK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn fake_art_hook(
+        _env: JniEnvPtr,
+        _cls: *mut c_void,
+        _name: *const c_char,
+        _sig: *const c_char,
+        _new_fn: *mut c_void,
+    ) -> *mut c_void {
+        HOOK_CALLS.fetch_add(1, Ordering::SeqCst);
+        0x1234_5678usize as *mut c_void
+    }
+
+    unsafe extern "C" fn fake_get_env(_vm: *mut c_void, out: *mut *mut c_void, ver: c_int) -> c_int {
+        SEEN_MAGIC.store(ver, Ordering::SeqCst);
+        if ver == ZYGISK_HOOK_JNI_MAGIC {
+            *out = fake_art_hook as *mut c_void;
+            0
+        } else {
+            -3
+        }
+    }
+
+    static mut FAKE_VM_VTABLE: [*const c_void; 8] = [std::ptr::null(); 8];
+    static mut FAKE_VM_PTR: *const *const c_void = std::ptr::null();
+
+    unsafe extern "C" fn fake_get_java_vm(_env: JniEnvPtr, out: *mut *mut c_void) -> c_int {
+        *out = (&raw mut FAKE_VM_PTR) as *mut c_void;
+        0
+    }
+
+    unsafe extern "C" fn fake_find_class(_env: JniEnvPtr, _name: *const c_char) -> *mut c_void {
+        0xbeefusize as *mut c_void
+    }
+
+    unsafe extern "C" fn fake_exc_clear(_env: JniEnvPtr) {}
+
+    unsafe extern "C" fn fake_reg_natives(
+        _env: JniEnvPtr,
+        _cls: *mut c_void,
+        _methods: *const JniNativeMethod,
+        _n: c_int,
+    ) -> c_int {
+        panic!("RegisterNatives fallback must not run when hidden ART hook was claimed");
+    }
+
+    #[test]
+    fn claims_hidden_art_jni_hook_via_getenv_magic_without_dlsym() {
+        unsafe {
+            ART_HOOK_JNI.store(std::ptr::null_mut(), Ordering::SeqCst);
+            SEEN_MAGIC.store(0, Ordering::SeqCst);
+            HOOK_CALLS.store(0, Ordering::SeqCst);
+
+            FAKE_VM_VTABLE[JAVA_VM_GET_ENV_IDX] = fake_get_env as *const c_void;
+            FAKE_VM_PTR = (&raw const FAKE_VM_VTABLE) as *const *const c_void;
+
+            let mut env_vtable = [std::ptr::null::<c_void>(); 224];
+            env_vtable[JNI_FIND_CLASS_IDX] = fake_find_class as *const c_void;
+            env_vtable[JNI_EXCEPTION_CLEAR_IDX] = fake_exc_clear as *const c_void;
+            env_vtable[JNI_REGISTER_NATIVES_IDX] = fake_reg_natives as *const c_void;
+            env_vtable[JNI_GET_JAVA_VM_IDX] = fake_get_java_vm as *const c_void;
+            let mut env_ptr: *const *const c_void = env_vtable.as_ptr();
+            let env = (&mut env_ptr as *mut *const *const c_void) as JniEnvPtr;
+
+            claim_art_hook_jni(env);
+            assert_eq!(SEEN_MAGIC.load(Ordering::SeqCst), ZYGISK_HOOK_JNI_MAGIC);
+            assert_eq!(ART_HOOK_JNI.load(Ordering::SeqCst), fake_art_hook as *mut c_void);
+
+            let mut m = JniNativeMethod {
+                name: c"nativeCheck".as_ptr(),
+                signature: c"()Z".as_ptr(),
+                fn_ptr: 0xdead_beefusize as *mut c_void,
+            };
+            api_hook_jni_native_methods(env, c"com/shopee/id/Risk".as_ptr(), &mut m, 1);
+            assert_eq!(HOOK_CALLS.load(Ordering::SeqCst), 1);
+            assert_eq!(m.fn_ptr as usize, 0x1234_5678);
+        }
+    }
 }

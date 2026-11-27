@@ -47,7 +47,7 @@ internal class SingleModernChain(
 
     override fun getThisObject(): Any? = thisObj
 
-    override fun getArgs(): List<Any?> = Collections.unmodifiableList(args.toMutableList())
+    override fun getArgs(): List<Any?> = Collections.unmodifiableList(args.asList())
 
     override fun getArg(index: Int): Any? = args[index]
 
@@ -100,7 +100,7 @@ class KaitChain(
 
     override fun getThisObject(): Any? = thisObj
 
-    override fun getArgs(): List<Any?> = Collections.unmodifiableList(args.toMutableList())
+    override fun getArgs(): List<Any?> = Collections.unmodifiableList(args.asList())
 
     override fun getArg(index: Int): Any? = args[index]
 

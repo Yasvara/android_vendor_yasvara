@@ -1,10 +1,8 @@
-# Public, immutable per-boot measurement published by system_server after KeyMint is ready.
 ro.yasvara.boot.digest           u:object_r:system_prop:s0 exact string
 ro.yasvara.boot.source           u:object_r:system_prop:s0 exact string
-
-init.svc.yasvara_sessiond         u:object_r:init_svc_debug_prop:s0 exact string
+persist.sys.yasvara.pif.         u:object_r:yasvara_pif_prop:s0 prefix string
+persist.sys.yasvara.             u:object_r:yasvara_integrity_prop:s0 prefix string
+init.svc.yasvara_sessiond        u:object_r:init_svc_debug_prop:s0 exact string
 sys.yasvara.hentak.scan          u:object_r:hentak_scan_prop:s0 exact string
 persist.sys.pasang.              u:object_r:system_prop:s0 prefix string
-
-# Generation of the Akar set files; Zygote compares its serial per fork. No app may read it.
 sys.yasvara.akar.gen             u:object_r:yasvara_akar_gen_prop:s0 exact string

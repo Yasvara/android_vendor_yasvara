@@ -33,10 +33,10 @@ use yasvara_integrity_core::digest::is_canonical_hex;
 use yasvara_integrity_core::prop_policy::{
     assemble_fingerprint, boot_story_value_cstr, build_identity_story_cstr, classify_app_cmdline,
     cmdline_is_collector, cmdline_is_placeholder, cmdline_is_rkp_mfg_exempt, cmdline_is_zygote,
-    find_boot_story, find_collector_story_cstr, is_boot_digest_prop, is_hidden_marker,
-    is_pif_staging, is_product_manufacturer_prop, is_rkp_mfg_staging, may_intercept,
-    normalize_build_flavor, staging_for_identity_cstr, PropVerdict, ROLE_APP, ROLE_COLLECTOR,
-    ROLE_NONE, ROLE_RKP_MFG_EXEMPT,
+    csv_contains_token, find_boot_story, find_collector_story_cstr, is_boot_digest_prop,
+    is_hidden_marker, is_pif_staging, is_product_manufacturer_prop, is_rkp_mfg_staging,
+    may_intercept, normalize_build_flavor, staging_for_identity_cstr, PropVerdict, ROLE_APP,
+    ROLE_COLLECTOR, ROLE_NONE, ROLE_RKP_MFG_EXEMPT,
 };
 
 // Thin platform primitives provided by `bionic/libc/bionic/system_property_api.cpp` &
@@ -55,6 +55,16 @@ const K_PIF_ENABLED_PROP: &[u8] = b"persist.sys.yasvara.pif.enabled\0";
 const K_LEGACY_PIF_PROP: &[u8] = b"persist.sys.yasvara.pif\0";
 const K_TRICKY_PROP: &[u8] = b"persist.sys.yasvara.trickystore\0";
 const K_RKP_MFG_PROP: &[u8] = b"persist.sys.yasvara.rkp_manufacturer\0";
+const K_RKP_EXEMPT_SLOTS: [&[u8]; 8] = [
+    b"persist.sys.yasvara.rkp_exempt.0\0",
+    b"persist.sys.yasvara.rkp_exempt.1\0",
+    b"persist.sys.yasvara.rkp_exempt.2\0",
+    b"persist.sys.yasvara.rkp_exempt.3\0",
+    b"persist.sys.yasvara.rkp_exempt.4\0",
+    b"persist.sys.yasvara.rkp_exempt.5\0",
+    b"persist.sys.yasvara.rkp_exempt.6\0",
+    b"persist.sys.yasvara.rkp_exempt.7\0",
+];
 const K_PIF_FINGERPRINT_PROP: &[u8] = b"persist.sys.yasvara.pif.fingerprint\0";
 const K_EMPTY_CSTR: &[u8] = b"\0";
 
@@ -211,6 +221,21 @@ fn intern_override_bytes(s: &[u8]) -> *const c_char {
     K_EMPTY_CSTR.as_ptr() as *const c_char
 }
 
+fn is_dynamic_rkp_exempt(name: &[u8]) -> bool {
+    let mut buf = [0u8; PROP_VALUE_MAX];
+    let mut i = 0usize;
+    while i < K_RKP_EXEMPT_SLOTS.len() {
+        let Some(slot) = raw_get_prop(K_RKP_EXEMPT_SLOTS[i], &mut buf) else {
+            break;
+        };
+        if csv_contains_token(slot, name) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 fn resolve_process_role() -> i32 {
     // SAFETY: External libc/host syscall trampoline.
     let cur = unsafe { yasvara_bionic_getpid() };
@@ -243,9 +268,12 @@ fn resolve_process_role() -> i32 {
         return ROLE_NONE;
     }
     let name = slice_until_nul(&cmdline);
-    let role = classify_app_cmdline(name);
+    let mut role = classify_app_cmdline(name);
     if role == ROLE_NONE {
         return ROLE_NONE;
+    }
+    if (role & (ROLE_COLLECTOR | ROLE_RKP_MFG_EXEMPT)) == 0 && is_dynamic_rkp_exempt(name) {
+        role |= ROLE_RKP_MFG_EXEMPT;
     }
     CACHED_ROLE.store(role, Ordering::Relaxed);
     CACHED_PID.store(cur, Ordering::Release);

@@ -40,6 +40,7 @@ fn emit_java() -> String {
     let string_consts: &[(&str, &str)] = &[
         ("ATTEST_DIR", ATTEST_DIR),
         ("KEYBOX_FILENAME", KEYBOX_FILENAME),
+        ("POLICY_FILENAME", POLICY_FILENAME),
         ("TARGETS_FILENAME", TARGETS_FILENAME),
         ("PATCH_OVERRIDE_FILENAME", PATCH_OVERRIDE_FILENAME),
         ("LEGACY_KEYBOX_PATH", LEGACY_KEYBOX_PATH),
@@ -60,12 +61,14 @@ fn emit_java() -> String {
         ("PROP_TRICKY_ENABLED", PROP_TRICKY_ENABLED),
         ("PROP_PATCH_OVERRIDE", PROP_PATCH_OVERRIDE),
         ("PROP_RKP_MANUFACTURER", PROP_RKP_MANUFACTURER),
+        ("PROP_RKP_EXEMPT_PREFIX", PROP_RKP_EXEMPT_PREFIX),
         ("PROP_RKP_SPOOF", PROP_RKP_SPOOF),
         ("PROP_PHOTOS_SPOOF", PROP_PHOTOS_SPOOF),
         ("PROP_SNAP_SPOOF", PROP_SNAP_SPOOF),
         ("SECURE_PIF_ENABLED", SECURE_PIF_ENABLED),
         ("SECURE_PIF_CONFIG", SECURE_PIF_CONFIG),
         ("SECURE_SPOOF_MODE", SECURE_SPOOF_MODE),
+        ("SECURE_APP_SPOOF_MAP", SECURE_APP_SPOOF_MAP),
         ("SECURE_PHOTOS_SPOOF", SECURE_PHOTOS_SPOOF),
         ("SECURE_SNAP_SPOOF", SECURE_SNAP_SPOOF),
         ("SECURE_KEYBOX_STAMP", SECURE_KEYBOX_STAMP),
@@ -94,6 +97,7 @@ fn emit_java() -> String {
     s.push('\n');
     let int_consts: &[(&str, i32)] = &[
         ("MAX_PROP_VALUE_BYTES", MAX_PROP_VALUE_BYTES as i32),
+        ("RKP_EXEMPT_MAX_SLOTS", RKP_EXEMPT_MAX_SLOTS as i32),
         ("MAX_KEYBOX_BYTES", MAX_KEYBOX_BYTES as i32),
         ("MAX_KEYBOX_CHARS", MAX_KEYBOX_CHARS as i32),
         ("KEYBOX_ERR_NONE", KEYBOX_ERR_NONE),
@@ -117,6 +121,7 @@ fn emit_java() -> String {
     emit_java_array(&mut s, "CAMERA_EXEMPT_PREFIXES", CAMERA_EXEMPT_PREFIXES);
     emit_java_array(&mut s, "RKP_MFG_EXEMPT_EXACT", RKP_MFG_EXEMPT_EXACT);
     emit_java_array(&mut s, "NATIVE_PIF_STAGING_KEYS", NATIVE_PIF_STAGING_KEYS);
+    emit_java_array(&mut s, "LEGACY_SECURE_KEYS", LEGACY_SECURE_KEYS);
 
     let default_targets_joined = DEFAULT_TRICKY_TARGETS
         .iter()

@@ -31,4 +31,6 @@ pub mod patch_override;
 #[cfg(feature = "alloc")]
 pub mod pif;
 #[cfg(feature = "alloc")]
+pub mod policy;
+#[cfg(feature = "alloc")]
 pub mod x509;
