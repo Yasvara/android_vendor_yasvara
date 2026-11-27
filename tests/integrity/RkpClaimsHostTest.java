@@ -51,6 +51,10 @@ public final class RkpClaimsHostTest {
                 combined(PROP_SPOOF, "1", PROP_DIGEST, "g".repeat(64)), Map.of());
         check("disabled when digest uppercase",
                 combined(PROP_SPOOF, "1", PROP_DIGEST, "AB".repeat(32)), Map.of());
+        check("disabled when digest all-zero sha256",
+                combined(PROP_SPOOF, "1", PROP_DIGEST, "00".repeat(32)), Map.of());
+        check("disabled when digest all-zero sha512",
+                combined(PROP_SPOOF, "1", PROP_DIGEST, "00".repeat(64)), Map.of());
 
         Map<String, String> expected64 = Map.of(
                 "vb_state", "green",

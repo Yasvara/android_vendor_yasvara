@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "yasvara-integrity-codegen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "yasvara_integrity_codegen"
+path = "src/main.rs"
+
+[dependencies]
+yasvara-integrity-core = { path = "../integrity-core" }

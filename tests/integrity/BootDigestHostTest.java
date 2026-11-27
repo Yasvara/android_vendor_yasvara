@@ -27,10 +27,13 @@ public final class BootDigestHostTest {
         check(Arrays.equals(sha256, YasvaraBootDigest.decodeCanonical(hex256)), "SHA-256 roundtrip");
         check(Arrays.equals(sha512, YasvaraBootDigest.decodeCanonical(hex512)), "SHA-512 roundtrip");
         for (String invalid : new String[] {null, "", "ab", "a".repeat(63), "a".repeat(65),
+                "0".repeat(64), "0".repeat(128),
                 "a".repeat(127), "a".repeat(129), "g".repeat(64), "Ａ".repeat(64),
                 hex256.toUpperCase(java.util.Locale.ROOT), " " + hex256, hex256 + "\n"}) {
             check(YasvaraBootDigest.decodeCanonical(invalid) == null, "reject malformed canonical");
         }
+        check(YasvaraBootDigest.encode(new byte[32]) == null, "reject all-zero SHA-256");
+        check(YasvaraBootDigest.encode(new byte[64]) == null, "reject all-zero SHA-512");
         check(YasvaraBootDigest.normalize(" \t" + hex256.toUpperCase(java.util.Locale.ROOT) + "\n")
                 .equals(hex256), "normalize external whitespace/case");
         String colonHash = String.join(":", hex512.split("(?<=\\G..)"));

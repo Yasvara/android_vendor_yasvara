@@ -1,0 +1,183 @@
+//
+// SPDX-FileCopyrightText: The Yasvara Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+    default_visibility: ["//visibility:public"],
+}
+
+// =========================================================================
+// 1. Pure #![no_std] zero-alloc core crate (linked into Bionic libc.so!)
+// =========================================================================
+
+rust_library_rlib {
+    name: "libyasvara_integrity_core_nostd",
+    crate_name: "yasvara_integrity_core",
+    srcs: ["crates/integrity-core/src/lib.rs"],
+    edition: "2021",
+    no_stdlibs: true,
+    apex_available: [
+        "//apex_available:platform",
+        "//apex_available:anyapex",
+    ],
+    vendor_available: true,
+    product_available: true,
+    ramdisk_available: true,
+    vendor_ramdisk_available: true,
+    recovery_available: true,
+    native_bridge_supported: true,
+    sdk_version: "minimum",
+    target: {
+        linux_bionic: {
+            enabled: true,
+        },
+    },
+}
+
+// Full-featured core crate (`alloc` enabled) for keystore2, JNI, codegen, and host tests.
+rust_library {
+    name: "libyasvara_integrity_core",
+    crate_name: "yasvara_integrity_core",
+    srcs: ["crates/integrity-core/src/lib.rs"],
+    edition: "2021",
+    features: ["alloc"],
+    host_supported: true,
+}
+
+rust_test_host {
+    name: "yasvara_integrity_core_test",
+    crate_name: "yasvara_integrity_core",
+    srcs: ["crates/integrity-core/src/lib.rs"],
+    edition: "2021",
+    features: ["alloc"],
+    test_suites: ["general-tests"],
+}
+
+// =========================================================================
+// 2. #![no_std] Bionic property engine linked directly into libc.so
+// =========================================================================
+
+rust_library_rlib {
+    name: "libyasvara_integrity_bionic",
+    crate_name: "yasvara_integrity_bionic",
+    srcs: ["crates/integrity-bionic/src/lib.rs"],
+    edition: "2021",
+    no_stdlibs: true,
+    rustlibs: [
+        "libyasvara_integrity_core_nostd",
+    ],
+    apex_available: [
+        "//apex_available:platform",
+        "//apex_available:anyapex",
+    ],
+    vendor_available: true,
+    product_available: true,
+    ramdisk_available: true,
+    vendor_ramdisk_available: true,
+    recovery_available: true,
+    native_bridge_supported: true,
+    sdk_version: "minimum",
+    target: {
+        linux_bionic: {
+            enabled: true,
+        },
+    },
+}
+
+// =========================================================================
+// 3. Shared Attestation Crypto + Keybox + Patcher (keystore2 + system_server)
+// =========================================================================
+
+cc_library_static {
+    name: "libyasvara_integrity_x509_verify",
+    srcs: ["crates/integrity-attest/src/x509_verify.cpp"],
+    shared_libs: ["libcrypto"],
+    host_supported: true,
+}
+
+rust_library {
+    name: "libyasvara_integrity_attest",
+    crate_name: "yasvara_integrity_attest",
+    srcs: ["crates/integrity-attest/src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libbssl_crypto",
+        "liblog_rust",
+        "libyasvara_integrity_core",
+    ],
+    static_libs: [
+        "libyasvara_integrity_x509_verify",
+    ],
+    shared_libs: [
+        "libcrypto",
+    ],
+    host_supported: true,
+}
+
+rust_test_host {
+    name: "yasvara_integrity_attest_test",
+    crate_name: "yasvara_integrity_attest",
+    srcs: ["crates/integrity-attest/src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libbssl_crypto",
+        "liblog_rust",
+        "libyasvara_integrity_core",
+    ],
+    static_libs: [
+        "libyasvara_integrity_x509_verify",
+    ],
+    shared_libs: [
+        "libcrypto",
+    ],
+    test_suites: ["general-tests"],
+}
+
+// =========================================================================
+// 4. JNI bridge loaded once by system_server (`YasvaraAttestationService`)
+// =========================================================================
+
+rust_ffi_shared {
+    name: "libyasvara_integrity_jni",
+    crate_name: "yasvara_integrity_jni",
+    srcs: ["crates/integrity-jni/src/lib.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    rustlibs: [
+        "libjni",
+        "libyasvara_integrity_attest",
+        "libyasvara_integrity_core",
+    ],
+    shared_libs: [
+        "libcrypto",
+    ],
+}
+
+// =========================================================================
+// 5. Build-time Codegen (Java contract + Bionic C ABI header)
+// =========================================================================
+
+rust_binary_host {
+    name: "yasvara_integrity_codegen",
+    srcs: ["crates/integrity-codegen/src/main.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libyasvara_integrity_core",
+    ],
+}
+
+genrule {
+    name: "yasvara_integrity_contract_java",
+    tools: ["yasvara_integrity_codegen"],
+    out: ["android/security/yasvara/YasvaraIntegrityContract.java"],
+    cmd: "$(location yasvara_integrity_codegen) --java > $(out)",
+}
+
+genrule {
+    name: "yasvara_integrity_bionic_h",
+    tools: ["yasvara_integrity_codegen"],
+    out: ["yasvara_integrity_bionic.h"],
+    cmd: "$(location yasvara_integrity_codegen) --c-header > $(out)",
+}

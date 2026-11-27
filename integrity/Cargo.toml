@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+#
+# Host builds and `cargo test` only; Android platform builds use Android.bp (Soong).
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/integrity-core",
+    "crates/integrity-bionic",
+    "crates/integrity-codegen",
+]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

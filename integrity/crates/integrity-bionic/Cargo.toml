@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "yasvara-integrity-bionic"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "yasvara_integrity_bionic"
+path = "src/lib.rs"
+
+[features]
+default = []
+panic_abort = []
+
+[dependencies]
+yasvara-integrity-core = { path = "../integrity-core", default-features = false }

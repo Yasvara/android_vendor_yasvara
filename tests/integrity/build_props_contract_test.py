@@ -17,7 +17,7 @@ OVERRIDE = "ro.appcompat_override.ro.boot.verifiedbootstate=green"
 GEN = "build/soong/scripts/gen_build_prop.py"
 CONFIG_MK = "build/make/core/config.mk"
 PROCESS_LIST = "frameworks/base/services/core/java/com/android/server/am/ProcessList.java"
-HOOK = "bionic/libc/bionic/yasvara_prop_hide.cpp"
+HOOK = "vendor/yasvara/integrity/crates/integrity-core/src/contract.rs"
 HOOK_H = "bionic/libc/bionic/yasvara_prop_hide.h"
 BUILD_PROP = ROOT / "out/target/product/onyx/system/build.prop"
 

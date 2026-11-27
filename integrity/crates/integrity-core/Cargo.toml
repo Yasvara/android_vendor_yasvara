@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: The Yasvara Project
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "yasvara-integrity-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "yasvara_integrity_core"
+path = "src/lib.rs"
+
+[features]
+default = ["alloc"]
+alloc = []
