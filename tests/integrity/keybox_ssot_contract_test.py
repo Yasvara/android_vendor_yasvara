@@ -69,6 +69,9 @@ class KeyboxSsot(unittest.TestCase):
         self.assertIn("onBootDigestPublished", service)
         self.assertNotIn("getRung", service)
         self.assertNotIn("SECURE_TRICKY_RUNG", read(CONTRACT_RS))
+        spoof = read("frameworks/base/core/java/android/security/yasvara/YasvaraSpoofEngine.java")
+        for token in ("droid_guard", "key_attestation", "device_verification", "writeStampAtomic"):
+            self.assertIn(token, spoof)
         # Dead Java fallback classes and obsolete RungStore must remain purged.
         core = ROOT / "frameworks/base/core/java/android/security/yasvara"
         for purged in (
